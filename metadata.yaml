@@ -1,0 +1,10 @@
+name: astrbot_plugin_truth_or_dare
+display_name: 真心话大冒险
+short_desc: 🎲 群聊真心话大冒险插件 - 加入游戏、Roll点、随机指定玩家完成事件
+desc: 一款群聊真心话大冒险派对游戏插件。玩家加入游戏后通过 Roll 点决定命运，机器人随机指定玩家完成真心话或大冒险事件，完成后再进入下一轮。
+author: DeepChat
+version: 1.0.0
+repo: https://github.com/user/astrbot_plugin_truth_or_dare
+astrbot_version: ">=4.0.0"
+support_platforms:
+  - aiocqhttp
