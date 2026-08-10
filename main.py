@@ -177,7 +177,7 @@ class TruthOrDarePlugin(Star):
         """加入真心话大冒险游戏"""
         group_id = self._get_group_id(event)
         if not group_id:
-            yield event.plain_result("⚠️ 该指令只能在群聊中使用！")
+            yield event.plain_result("该指令只能在群聊中使用！")
             return
 
         session = self._get_session(group_id)
@@ -186,28 +186,28 @@ class TruthOrDarePlugin(Star):
         max_players = self.config.get("max_players", 50)
 
         if session.is_started:
-            yield event.plain_result("⚠️ 游戏已经开始，请等待下一局再加入！")
+            yield event.plain_result("游戏已经开始，请等待下一局再加入！")
             return
 
         if session.get_player_count() >= max_players:
-            yield event.plain_result(f"⚠️ 游戏人数已达上限（{max_players}人），无法加入！")
+            yield event.plain_result(f"游戏人数已达上限（{max_players}人），无法加入！")
             return
 
         if session.add_player(user_id, user_name):
             logger.info(f"[真心话大冒险] 玩家 {user_name}({user_id}) 加入群 {group_id} 的游戏")
             yield event.plain_result(
-                f"✅ {user_name} 加入了真心话大冒险！\n"
+                f"{user_name} 加入了真心话大冒险！\n"
                 f"当前玩家数：{session.get_player_count()}"
             )
         else:
-            yield event.plain_result(f"⚠️ {user_name} 已经在游戏中啦！")
+            yield event.plain_result(f"{user_name} 已经在游戏中啦！")
 
     @filter.command("td_leave", alias={"td退出", "tdleave"})
     async def cmd_quit(self, event: AstrMessageEvent):
         """退出真心话大冒险游戏"""
         group_id = self._get_group_id(event)
         if not group_id:
-            yield event.plain_result("❌ 该指令只能在群聊中使用！")
+            yield event.plain_result("该指令只能在群聊中使用！")
             return
 
         session = self._get_session(group_id)
@@ -215,16 +215,16 @@ class TruthOrDarePlugin(Star):
         user_name = event.get_sender_name()
 
         if user_id not in session.players:
-            yield event.plain_result(f"⚠️ {user_name} 不在游戏中！")
+            yield event.plain_result(f"{user_name} 不在游戏中！")
             return
 
         if session.is_started:
-            yield event.plain_result("⚠️ 游戏正在进行中，请等待当前轮次结束后再退出！")
+            yield event.plain_result("游戏正在进行中，请等待当前轮次结束后再退出！")
             return
 
         session.remove_player(user_id)
         yield event.plain_result(
-            f"👋 {user_name} 退出了游戏。\n"
+            f"{user_name} 退出了游戏。\n"
             f"当前玩家数：{session.get_player_count()}"
         )
 
@@ -233,14 +233,14 @@ class TruthOrDarePlugin(Star):
         """查看当前玩家列表"""
         group_id = self._get_group_id(event)
         if not group_id:
-            yield event.plain_result("❌ 该指令只能在群聊中使用！")
+            yield event.plain_result("该指令只能在群聊中使用！")
             return
 
         session = self._get_session(group_id)
         player_text = session.get_player_list_text()
-        status = "🟢 游戏中" if session.is_started else "🟡 等待开始"
+        status = "游戏中" if session.is_started else "等待开始"
         yield event.plain_result(
-            f"📋 真心话大冒险 - 玩家列表 [{status}]\n"
+            f"真心话大冒险 - 玩家列表 [{status}]\n"
             f"人数：{session.get_player_count()}\n"
             f"────────────────\n"
             f"{player_text}"
@@ -251,19 +251,19 @@ class TruthOrDarePlugin(Star):
         """开始真心话大冒险游戏"""
         group_id = self._get_group_id(event)
         if not group_id:
-            yield event.plain_result("❌ 该指令只能在群聊中使用！")
+            yield event.plain_result("该指令只能在群聊中使用！")
             return
 
         session = self._get_session(group_id)
         min_players = self.config.get("min_players", 4)
 
         if session.is_started:
-            yield event.plain_result("⚠️ 游戏已经开始啦！")
+            yield event.plain_result("游戏已经开始啦！")
             return
 
         if session.get_player_count() < min_players:
             yield event.plain_result(
-                f"⚠️ 至少需要 {min_players} 名玩家才能开始游戏！\n"
+                f"至少需要 {min_players} 名玩家才能开始游戏！\n"
                 f"当前玩家数：{session.get_player_count()}"
             )
             return
@@ -275,12 +275,12 @@ class TruthOrDarePlugin(Star):
         # 计算当前人数对应的目标人数
         target_count = self._calc_target_count(session.get_player_count())
         yield event.plain_result(
-            f"🎉 真心话大冒险 正式开始！\n\n"
-            f"👥 参与玩家（{session.get_player_count()}人）：\n"
+            f"真心话大冒险 正式开始！\n\n"
+            f"参与玩家（{session.get_player_count()}人）：\n"
             f"{player_text}\n\n"
-            f"📌 请所有玩家发送 /td_roll 来 Roll 点！\n"
-            f"📌 本轮将随机抽取 {target_count} 人完成事件！\n"
-            f"📌 Roll 点最低的玩家优先被选中！"
+            f"请所有玩家发送 /td_roll 来 Roll 点！\n"
+            f"本轮将随机抽取 {target_count} 人完成事件！\n"
+            f"Roll 点最低的玩家优先被选中！"
         )
 
     @filter.command("td_roll", alias={"tdr", "tdroll"})
@@ -288,7 +288,7 @@ class TruthOrDarePlugin(Star):
         """玩家 Roll 点（仅群聊）"""
         group_id = self._get_group_id(event)
         if not group_id:
-            yield event.plain_result("❌ 该指令只能在群聊中使用！")
+            yield event.plain_result("该指令只能在群聊中使用！")
             return
 
         session = self._get_session(group_id)
@@ -296,11 +296,11 @@ class TruthOrDarePlugin(Star):
         user_name = event.get_sender_name()
 
         if not session.is_started:
-            yield event.plain_result("⚠️ 游戏还没开始，请先发送 /td_start 开始游戏！")
+            yield event.plain_result("游戏还没开始，请先发送 /td_start 开始游戏！")
             return
 
         if user_id not in session.players:
-            yield event.plain_result("⚠️ 你不在游戏中，请先发送 /td_join 加入！")
+            yield event.plain_result("你不在游戏中，请先发送 /td_join 加入！")
             return
 
         # 执行 Roll 点
@@ -314,7 +314,7 @@ class TruthOrDarePlugin(Star):
         )
 
         yield event.plain_result(
-            f"🎲 {user_name} Roll 出了 {roll_result} 点！"
+            f"{user_name} Roll 出了 {roll_result} 点！"
         )
 
     @filter.command("td_result", alias={"td结果", "tdresult"})
@@ -322,13 +322,13 @@ class TruthOrDarePlugin(Star):
         """查看所有玩家的 Roll 结果"""
         group_id = self._get_group_id(event)
         if not group_id:
-            yield event.plain_result("❌ 该指令只能在群聊中使用！")
+            yield event.plain_result("该指令只能在群聊中使用！")
             return
 
         session = self._get_session(group_id)
 
         if not session.is_started:
-            yield event.plain_result("⚠️ 游戏还没开始！")
+            yield event.plain_result("游戏还没开始！")
             return
 
         # 检查是否所有人都 Roll 了
@@ -342,9 +342,9 @@ class TruthOrDarePlugin(Star):
             lines.append(f"  {p.user_name}：{roll_text}")
 
         yield event.plain_result(
-            f"📊 Roll 点结果（{rolled_count}/{total} 已Roll）\n\n"
+            f"Roll 点结果（{rolled_count}/{total} 已Roll）\n\n"
             + "\n".join(lines)
-            + f"\n\n💡 发送 /td_go 让机器人处理事件！"
+            + f"\n\n发送 /td_go 让机器人处理事件！"
         )
 
     @filter.command("td_go", alias={"tdgo", "td下一轮"})
@@ -357,19 +357,19 @@ class TruthOrDarePlugin(Star):
         """
         group_id = self._get_group_id(event)
         if not group_id:
-            yield event.plain_result("❌ 该指令只能在群聊中使用！")
+            yield event.plain_result("该指令只能在群聊中使用！")
             return
 
         session = self._get_session(group_id)
 
         if not session.is_started:
-            yield event.plain_result("⚠️ 游戏还没开始，请先发送 /td_start 开始游戏！")
+            yield event.plain_result("游戏还没开始，请先发送 /td_start 开始游戏！")
             return
 
         # 检查冷却
         remaining = self._check_cooldown(session)
         if remaining is not None:
-            yield event.plain_result(f"⏳ 冷却中，请等待 {remaining:.0f} 秒后再开始下一轮！")
+            yield event.plain_result(f"冷却中，请等待 {remaining:.0f} 秒后再开始下一轮！")
             return
 
         # 检查是否所有人都 Roll 了
@@ -377,7 +377,7 @@ class TruthOrDarePlugin(Star):
         if unrolled:
             names = "、".join(p.user_name for p in unrolled)
             yield event.plain_result(
-                f"⚠️ 以下玩家还没 Roll 点：\n{names}\n\n"
+                f"以下玩家还没 Roll 点：\n{names}\n\n"
                 f"请发送 /td_roll 完成 Roll 点后再继续！"
             )
             return
@@ -389,7 +389,7 @@ class TruthOrDarePlugin(Star):
 
         # 决定事件类型和内容
         event_type, event_text = self._pick_event()
-        type_name = "💬 真心话" if event_type == "truth" else "🎯 大冒险"
+        type_name = "真心话" if event_type == "truth" else "大冒险"
 
         # 动态计算目标人数：4人→2人，每+2人→+1人
         target_count = self._calc_target_count(len(all_players))
@@ -421,17 +421,17 @@ class TruthOrDarePlugin(Star):
         at_chain = [At(qq=t.user_id) for t in targets]
 
         result = (
-            f"🎪 第 {session.current_round} 轮\n\n"
-            f"📊 Roll 点结果：\n"
+            f"第 {session.current_round} 轮\n\n"
+            f"Roll 点结果：\n"
         )
         for p in sorted(all_players, key=lambda x: x.last_roll):
             result += f"  {p.user_name}：{p.last_roll}\n"
 
         result += (
-            f"\n🎯 被选中的玩家（{len(targets)}人）：{target_names}\n"
+            f"\n被选中的玩家（{len(targets)}人）：{target_names}\n"
             f"{type_name}：{event_text}\n\n"
-            f"💡 请 {target_names} 完成事件后，发送 /td_done 确认完成！\n"
-            f"💡 发送 /td_skip 可以跳过本轮（需要被选中的玩家本人确认）"
+            f"请 {target_names} 完成事件后，发送 /td_done 确认完成！\n"
+            f"发送 /td_skip 可以跳过本轮（需要被选中的玩家本人确认）"
         )
 
         logger.info(
@@ -447,17 +447,17 @@ class TruthOrDarePlugin(Star):
         """完成当前事件，进入下一轮"""
         group_id = self._get_group_id(event)
         if not group_id:
-            yield event.plain_result("❌ 该指令只能在群聊中使用！")
+            yield event.plain_result("该指令只能在群聊中使用！")
             return
 
         session = self._get_session(group_id)
 
         if not session.is_started:
-            yield event.plain_result("⚠️ 游戏还没开始！")
+            yield event.plain_result("游戏还没开始！")
             return
 
         if not session.round_in_progress:
-            yield event.plain_result("⚠️ 当前没有进行中的事件，请先发送 /td_go 开始新一轮！")
+            yield event.plain_result("当前没有进行中的事件，请先发送 /td_go 开始新一轮！")
             return
 
         user_id = event.get_sender_id()
@@ -465,7 +465,7 @@ class TruthOrDarePlugin(Star):
 
         # 只有被选中的玩家才能确认完成
         if user_id not in session.current_target_ids:
-            yield event.plain_result(f"⚠️ {user_name} 不是本轮被选中的玩家，无法确认完成！")
+            yield event.plain_result(f"{user_name} 不是本轮被选中的玩家，无法确认完成！")
             return
 
         # 重置轮次并进入下一轮
@@ -473,8 +473,8 @@ class TruthOrDarePlugin(Star):
         session.last_cooldown_end_time = time.time()
 
         yield event.plain_result(
-            f"✅ {user_name} 完成了事件！\n\n"
-            f"🎉 本轮结束！请发送 /td_go 开始下一轮！"
+            f"{user_name} 完成了事件！\n\n"
+            f"本轮结束！请发送 /td_go 开始下一轮！"
         )
 
     @filter.command("td_skip", alias={"td跳过", "tdskip"})
@@ -482,24 +482,24 @@ class TruthOrDarePlugin(Star):
         """跳过当前事件（需要被选中的玩家确认）"""
         group_id = self._get_group_id(event)
         if not group_id:
-            yield event.plain_result("❌ 该指令只能在群聊中使用！")
+            yield event.plain_result("该指令只能在群聊中使用！")
             return
 
         session = self._get_session(group_id)
 
         if not session.is_started:
-            yield event.plain_result("⚠️ 游戏还没开始！")
+            yield event.plain_result("游戏还没开始！")
             return
 
         if not session.round_in_progress:
-            yield event.plain_result("⚠️ 当前没有进行中的事件！")
+            yield event.plain_result("当前没有进行中的事件！")
             return
 
         user_id = event.get_sender_id()
         user_name = event.get_sender_name()
 
         if user_id not in session.current_target_ids:
-            yield event.plain_result(f"⚠️ {user_name} 不是本轮被选中的玩家，无法跳过！")
+            yield event.plain_result(f"{user_name} 不是本轮被选中的玩家，无法跳过！")
             return
 
         event_type = session.current_event_type
@@ -511,9 +511,9 @@ class TruthOrDarePlugin(Star):
         session.last_cooldown_end_time = time.time()
 
         yield event.plain_result(
-            f"⏭️ {user_name} 跳过了本轮事件！\n"
+            f"{user_name} 跳过了本轮事件！\n"
             f"跳过的{type_label}：{event_text}\n\n"
-            f"🎉 本轮结束！请发送 /td_go 开始下一轮！"
+            f"本轮结束！请发送 /td_go 开始下一轮！"
         )
 
     @filter.command("td_kick", alias={"td踢人", "tdkick"})
@@ -521,13 +521,13 @@ class TruthOrDarePlugin(Star):
         """管理员踢出玩家（解决玩家 AFK 导致游戏卡死的问题）"""
         group_id = self._get_group_id(event)
         if not group_id:
-            yield event.plain_result("❌ 该指令只能在群聊中使用！")
+            yield event.plain_result("该指令只能在群聊中使用！")
             return
 
         session = self._get_session(group_id)
 
         if not session.is_started:
-            yield event.plain_result("⚠️ 游戏还没开始！")
+            yield event.plain_result("游戏还没开始！")
             return
 
         # 检查发送者是否为群管理员（通过消息事件获取角色）
@@ -546,14 +546,14 @@ class TruthOrDarePlugin(Star):
         if at_targets:
             target_id = str(at_targets[0].qq)
             if target_id not in session.players:
-                yield event.plain_result("⚠️ 该玩家不在游戏中！")
+                yield event.plain_result("该玩家不在游戏中！")
                 return
             target_name = session.players[target_id].user_name
         else:
             # 尝试从纯文本中提取玩家名
             parts = message.strip().split(None, 1)
             if len(parts) < 2:
-                yield event.plain_result("⚠️ 请指定要踢出的玩家：/td_kick @玩家 或 /td_kick 玩家名")
+                yield event.plain_result("请指定要踢出的玩家：/td_kick @玩家 或 /td_kick 玩家名")
                 return
             target_name = parts[1].strip()
             # 按名字查找
@@ -563,7 +563,7 @@ class TruthOrDarePlugin(Star):
                     target_id = uid
                     break
             if not target_id:
-                yield event.plain_result(f"⚠️ 未找到玩家：{target_name}")
+                yield event.plain_result(f"未找到玩家：{target_name}")
                 return
 
         # 踢出玩家
@@ -573,13 +573,13 @@ class TruthOrDarePlugin(Star):
             session.reset_round()
             session.last_cooldown_end_time = time.time()
             yield event.plain_result(
-                f"👢 {target_name} 被踢出游戏！\n"
+                f"{target_name} 被踢出游戏！\n"
                 f"当前轮次已重置，请发送 /td_go 重新开始。\n"
                 f"当前玩家数：{session.get_player_count()}"
             )
         else:
             yield event.plain_result(
-                f"👢 {target_name} 被踢出游戏！\n"
+                f"{target_name} 被踢出游戏！\n"
                 f"当前玩家数：{session.get_player_count()}"
             )
 
@@ -592,8 +592,8 @@ class TruthOrDarePlugin(Star):
             session.players.clear()
             session.player_order.clear()
             yield event.plain_result(
-                f"⚠️ 玩家数量不足 {min_players} 人，游戏自动结束！\n"
-                f"总共进行了 {total_rounds} 轮。感谢大家的参与！🎉"
+                f"玩家数量不足 {min_players} 人，游戏自动结束！\n"
+                f"总共进行了 {total_rounds} 轮。感谢大家的参与！"
             )
 
     @filter.command("td_stop", alias={"td结束", "tdstop"})
@@ -601,13 +601,13 @@ class TruthOrDarePlugin(Star):
         """结束游戏"""
         group_id = self._get_group_id(event)
         if not group_id:
-            yield event.plain_result("❌ 该指令只能在群聊中使用！")
+            yield event.plain_result("该指令只能在群聊中使用！")
             return
 
         session = self._get_session(group_id)
 
         if not session.is_started:
-            yield event.plain_result("⚠️ 游戏还没开始！")
+            yield event.plain_result("游戏还没开始！")
             return
 
         total_rounds = session.current_round
@@ -617,34 +617,34 @@ class TruthOrDarePlugin(Star):
         session.player_order.clear()
 
         yield event.plain_result(
-            f"🛑 游戏结束！\n"
+            f"游戏结束！\n"
             f"总共进行了 {total_rounds} 轮。\n"
-            f"感谢大家的参与！🎉"
+            f"感谢大家的参与！"
         )
 
     @filter.command("td_help", alias={"td帮助", "tdhelp"})
     async def cmd_help(self, event: AstrMessageEvent):
         """查看帮助信息"""
         yield event.plain_result(
-            "🎲 真心话大冒险 - 游戏帮助\n\n"
-            "📌 游戏流程：\n"
-            "1️⃣ /td_join  - 加入游戏\n"
-            "2️⃣ /td_start - 开始游戏（至少4人）\n"
-            "3️⃣ /td_roll  - 所有玩家 Roll 点\n"
-            "4️⃣ /td_go    - 机器人处理事件（随机指定玩家）\n"
-            "5️⃣ /td_done  - 完成事件，进入下一轮\n"
-            "6️⃣ /td_skip  - 跳过当前事件\n\n"
-            "📋 其他指令：\n"
+            "真心话大冒险 - 游戏帮助\n\n"
+            "游戏流程：\n"
+            "1. /td_join  - 加入游戏\n"
+            "2. /td_start - 开始游戏（至少4人）\n"
+            "3. /td_roll  - 所有玩家 Roll 点\n"
+            "4. /td_go    - 机器人处理事件（随机指定玩家）\n"
+            "5. /td_done  - 完成事件，进入下一轮\n"
+            "6. /td_skip  - 跳过当前事件\n\n"
+            "其他指令：\n"
             "/td_list   - 查看玩家列表\n"
             "/td_result - 查看 Roll 点结果\n"
             "/td_leave  - 退出游戏\n"
             "/td_kick   - 踢出 AFK 玩家（管理员）\n"
             "/td_stop   - 结束游戏\n"
             "/td_help   - 显示此帮助\n\n"
-            "📐 动态人数规则：\n"
+            "动态人数规则：\n"
             "4人→抽2人 | 6人→抽3人 | 8人→抽4人\n"
             "每增加2人，事件目标人数+1\n\n"
-            "💡 所有指令均以 td_ 开头，避免与其他插件冲突"
+            "所有指令均以 td_ 开头，避免与其他插件冲突"
         )
 
     # ── 生命周期 ──────────────────────────────────────────
