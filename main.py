@@ -8,6 +8,8 @@ astrbot_plugin_truth_or_dare - 真心话大冒险
 import time
 import random
 import asyncio
+import json
+import os
 from typing import Dict, List, Optional
 
 from astrbot.api.event import filter, AstrMessageEvent
@@ -43,6 +45,8 @@ class GameSession:
         self.current_event_text: Optional[str] = None    # 事件内容
         self.current_target_ids: List[str] = []          # 本轮被选中的玩家 user_id
         self.current_target_count: int = 0               # 本轮实际指定人数
+        # 管理员手动指定的本轮目标（优先级高于 Roll 点）
+        self.designated_ids: List[str] = []              # 指定的玩家 user_id 列表
 
     def add_player(self, user_id: str, user_name: str) -> bool:
         """添加玩家，返回是否成功"""
@@ -82,6 +86,8 @@ class GameSession:
         self.current_event_text = None
         self.current_target_ids = []
         self.current_target_count = 0
+        # 清除手动指定名单（本轮已用完，避免影响下一轮）
+        self.designated_ids = []
         # 清除所有玩家的 Roll 记录
         for p in self.players.values():
             p.last_roll = None
@@ -169,6 +175,74 @@ class TruthOrDarePlugin(Star):
         if player_count < 4:
             return min(2, player_count)
         return min(max(2, (player_count - 4) // 2 + 2), player_count)
+
+    # ── 数据持久化 ──────────────────────────────────────────
+
+    def _get_data_path(self) -> str:
+        """获取数据持久化文件路径"""
+        data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+        os.makedirs(data_dir, exist_ok=True)
+        return os.path.join(data_dir, "game_sessions.json")
+
+    def _save_sessions(self):
+        """保存所有游戏会话到磁盘"""
+        try:
+            data = {}
+            for gid, session in self.games.items():
+                if not session.players:
+                    continue
+                data[gid] = {
+                    "players": [
+                        {
+                            "user_id": uid,
+                            "user_name": session.players[uid].user_name,
+                            "last_roll": session.players[uid].last_roll,
+                        }
+                        for uid in session.player_order
+                    ],
+                    "player_order": session.player_order,
+                    "is_started": session.is_started,
+                    "current_round": session.current_round,
+                }
+            with open(self._get_data_path(), "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.error(f"[真心话大冒险] 保存游戏数据失败: {e}")
+
+    def _load_sessions(self):
+        """从磁盘加载游戏会话"""
+        try:
+            path = self._get_data_path()
+            if not os.path.exists(path):
+                return
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            for gid, sdata in data.items():
+                session = GameSession(gid)
+                for pdata in sdata.get("players", []):
+                    p = Player(pdata["user_id"], pdata["user_name"])
+                    p.last_roll = pdata.get("last_roll")
+                    session.players[p.user_id] = p
+                session.player_order = sdata.get("player_order", [])
+                session.is_started = sdata.get("is_started", False)
+                session.current_round = sdata.get("current_round", 0)
+                # 重启后不恢复进行中的轮次状态，需要重新 Roll
+                session.round_in_progress = False
+                session.current_event_type = None
+                session.current_event_text = None
+                session.current_target_ids = []
+                session.current_target_count = 0
+                self.games[gid] = session
+            if self.games:
+                logger.info(f"[真心话大冒险] 已恢复 {len(self.games)} 个群的游戏会话")
+        except Exception as e:
+            logger.error(f"[真心话大冒险] 加载游戏数据失败: {e}")
+
+    async def _periodic_save(self):
+        """定时自动保存游戏数据（每 30 秒）"""
+        while True:
+            await asyncio.sleep(30)
+            self._save_sessions()
 
     # ── 指令处理 ──────────────────────────────────────────
 
@@ -372,20 +446,26 @@ class TruthOrDarePlugin(Star):
             yield event.plain_result(f"冷却中，请等待 {remaining:.0f} 秒后再开始下一轮！")
             return
 
-        # 检查是否所有人都 Roll 了
-        unrolled = [p for p in session.players.values() if p.last_roll is None]
-        if unrolled:
-            names = "、".join(p.user_name for p in unrolled)
-            yield event.plain_result(
-                f"以下玩家还没 Roll 点：\n{names}\n\n"
-                f"请发送 /td_roll 完成 Roll 点后再继续！"
-            )
-            return
+        # 检查是否所有人都 Roll 了（手动指定的情况下允许部分未 Roll）
+        if not session.designated_ids:
+            unrolled = [p for p in session.players.values() if p.last_roll is None]
+            if unrolled:
+                names = "、".join(p.user_name for p in unrolled)
+                yield event.plain_result(
+                    f"以下玩家还没 Roll 点：\n{names}\n\n"
+                    f"请发送 /td_roll 完成 Roll 点后再继续！"
+                )
+                return
 
         # 找出 Roll 点最低的玩家
         all_players = list(session.players.values())
-        min_roll = min(p.last_roll for p in all_players)
-        lowest_players = [p for p in all_players if p.last_roll == min_roll]
+        min_roll = min(p.last_roll for p in all_players) if all(
+            p.last_roll is not None for p in all_players
+        ) else None
+        lowest_players = (
+            [p for p in all_players if p.last_roll == min_roll]
+            if min_roll is not None else []
+        )
 
         # 决定事件类型和内容
         event_type, event_text = self._pick_event()
@@ -396,17 +476,33 @@ class TruthOrDarePlugin(Star):
         # 上限保护：实际目标人数不超过可选玩家总数
         actual_count = min(target_count, len(all_players))
 
-        # 从最低 Roll 点玩家中选目标
-        if len(lowest_players) >= actual_count:
-            targets = random.sample(lowest_players, actual_count)
-        else:
-            # 最低 Roll 点玩家不够，从所有玩家中随机补足
-            targets = lowest_players.copy()
-            remaining_pool = [p for p in all_players if p not in lowest_players]
-            extra_needed = actual_count - len(targets)
-            if extra_needed > 0 and remaining_pool:
-                extra = random.sample(remaining_pool, min(extra_needed, len(remaining_pool)))
-                targets.extend(extra)
+        # 优先使用管理员手动指定的目标
+        targets: List = []
+        is_designated = False
+        if session.designated_ids:
+            for uid in session.designated_ids:
+                if uid in session.players:
+                    targets.append(session.players[uid])
+            # 限缩到目标人数
+            if len(targets) > actual_count:
+                targets = targets[:actual_count]
+            is_designated = True
+
+        # 若无指定，走原有 Roll 点逻辑
+        if not targets:
+            if not lowest_players:
+                yield event.plain_result("没有可用的 Roll 点结果，请先 /td_roll！")
+                return
+            if len(lowest_players) >= actual_count:
+                targets = random.sample(lowest_players, actual_count)
+            else:
+                # 最低 Roll 点玩家不够，从所有玩家中随机补足
+                targets = lowest_players.copy()
+                remaining_pool = [p for p in all_players if p not in lowest_players]
+                extra_needed = actual_count - len(targets)
+                if extra_needed > 0 and remaining_pool:
+                    extra = random.sample(remaining_pool, min(extra_needed, len(remaining_pool)))
+                    targets.extend(extra)
 
         # 记录本轮数据
         session.current_round += 1
@@ -433,6 +529,8 @@ class TruthOrDarePlugin(Star):
             f"请 {target_names} 完成事件后，发送 /td_done 确认完成！\n"
             f"发送 /td_skip 可以跳过本轮（需要被选中的玩家本人确认）"
         )
+        if is_designated:
+            result += "\n（本轮由管理员手动指定）"
 
         logger.info(
             f"[真心话大冒险] 群 {group_id} 第 {session.current_round} 轮："
@@ -441,6 +539,121 @@ class TruthOrDarePlugin(Star):
 
         # 先发 @ 提醒，再发事件详情
         yield event.chain_result(at_chain + [Plain(result)])
+
+    @filter.command("td_指定", alias={"td指定", "tddesignate"})
+    async def cmd_designate(self, event: AstrMessageEvent):
+        """
+        管理员手动指定本轮事件目标（优先级高于 Roll 点）。
+
+        用法：/td_指定 @玩家1 @玩家2 ...
+             /td_指定 玩家名1 玩家名2 ...
+        """
+        group_id = self._get_group_id(event)
+        if not group_id:
+            yield event.plain_result("该指令只能在群聊中使用！")
+            return
+
+        session = self._get_session(group_id)
+
+        if not session.is_started:
+            yield event.plain_result("游戏还没开始，请先发送 /td_start 开始游戏！")
+            return
+
+        # 权限检查：仅群主/管理员可指定
+        sender_id = event.get_sender_id()
+        sender_name = event.get_sender_name()
+        sender_role = event.get_sender_role() if hasattr(event, 'get_sender_role') else None
+        is_admin = sender_role in ("owner", "admin") if sender_role else False
+        if not is_admin:
+            yield event.plain_result(
+                f"{sender_name}，你没有管理员权限，无法手动指定事件目标！"
+            )
+            return
+
+        # 解析指定目标：优先从 At 组件，再从纯文本名字
+        target_ids: List[str] = []
+        target_names: List[str] = []
+
+        # 从 At 组件提取
+        at_targets = [comp for comp in event.message_obj.message if isinstance(comp, At)]
+        for at in at_targets:
+            uid = str(at.qq)
+            if uid in session.players and uid not in target_ids:
+                target_ids.append(uid)
+                target_names.append(session.players[uid].user_name)
+
+        # 从纯文本名字提取（去掉指令本身）
+        message = event.get_message_str()
+        parts = message.strip().split()
+        # 第一段是指令名（/td_指定 或别名），跳过
+        if parts:
+            parts = parts[1:]
+        for name in parts:
+            name = name.strip()
+            if not name or name.startswith("@"):
+                continue
+            # 按名字查找
+            for uid, p in session.players.items():
+                if p.user_name == name and uid not in target_ids:
+                    target_ids.append(uid)
+                    target_names.append(p.user_name)
+                    break
+
+        if not target_ids:
+            yield event.plain_result(
+                "请指定要手动指定的玩家：\n"
+                "/td_指定 @玩家1 @玩家2 ...\n"
+                "/td_指定 玩家名1 玩家名2 ..."
+            )
+            return
+
+        # 限制指定人数不超过动态计算的目标人数（避免一次指定过多）
+        target_count = self._calc_target_count(session.get_player_count())
+        if len(target_ids) > target_count:
+            yield event.plain_result(
+                f"指定人数过多！当前游戏最多可指定 {target_count} 人（本局 {session.get_player_count()} 人）。"
+            )
+            return
+
+        # 保存指定名单（用于本轮 /td_go）
+        session.designated_ids = target_ids
+        names_str = "、".join(target_names)
+        yield event.plain_result(
+            f"已手动指定本轮目标玩家（{len(target_ids)}人）：{names_str}\n\n"
+            f"下次发送 /td_go 时，将优先让这些玩家完成事件。\n"
+            f"如需取消指定，请发送 /td_指定清除"
+        )
+
+    @filter.command("td_指定清除", alias={"td指定清除", "tddesignate_clear"})
+    async def cmd_designate_clear(self, event: AstrMessageEvent):
+        """清除本轮手动指定的目标"""
+        group_id = self._get_group_id(event)
+        if not group_id:
+            yield event.plain_result("该指令只能在群聊中使用！")
+            return
+
+        session = self._get_session(group_id)
+
+        if not session.is_started:
+            yield event.plain_result("游戏还没开始！")
+            return
+
+        sender_id = event.get_sender_id()
+        sender_name = event.get_sender_name()
+        sender_role = event.get_sender_role() if hasattr(event, 'get_sender_role') else None
+        is_admin = sender_role in ("owner", "admin") if sender_role else False
+        if not is_admin:
+            yield event.plain_result(
+                f"{sender_name}，你没有管理员权限，无法清除指定！"
+            )
+            return
+
+        if not session.designated_ids:
+            yield event.plain_result("本轮没有手动指定的目标。")
+            return
+
+        session.designated_ids = []
+        yield event.plain_result("已清除本轮手动指定的目标，下次 /td_go 将按 Roll 点选择。")
 
     @filter.command("td_done", alias={"td完成", "tddone"})
     async def cmd_done(self, event: AstrMessageEvent):
@@ -530,13 +743,12 @@ class TruthOrDarePlugin(Star):
             yield event.plain_result("游戏还没开始！")
             return
 
-        # 检查发送者是否为群管理员（通过消息事件获取角色）
         sender_id = event.get_sender_id()
+        sender_name = event.get_sender_name()
+        # 获取发送者角色：owner/admin 为管理员
         sender_role = event.get_sender_role() if hasattr(event, 'get_sender_role') else None
-
-        # 如果获取不到角色信息，允许任何玩家踢人（但只能踢自己）
-        # 如果有角色信息，只允许管理员踢人
-        is_admin = sender_role in ("owner", "admin") if sender_role else True
+        # 获取不到角色信息时默认非管理员（安全降级）
+        is_admin = sender_role in ("owner", "admin") if sender_role else False
 
         # 从消息中提取被踢玩家
         message = event.get_message_str()
@@ -566,12 +778,34 @@ class TruthOrDarePlugin(Star):
                 yield event.plain_result(f"未找到玩家：{target_name}")
                 return
 
+        # 权限检查：管理员可踢任意玩家；非管理员仅可踢自己
+        if not is_admin and target_id != sender_id:
+            yield event.plain_result(
+                f"{sender_name}，你没有管理员权限，只能踢出自己！"
+            )
+            return
+
         # 踢出玩家
+        was_target = target_id in session.current_target_ids
         session.remove_player(target_id)
-        # 如果被踢玩家是当前轮的目标，重置轮次
-        if target_id in session.current_target_ids:
+        if was_target:
             session.reset_round()
             session.last_cooldown_end_time = time.time()
+
+        # 检查人数是否不足，不足则自动结束游戏
+        min_players = self.config.get("min_players", 4)
+        if session.get_player_count() < min_players:
+            total_rounds = session.current_round
+            session.is_started = False
+            session.reset_round()
+            session.players.clear()
+            session.player_order.clear()
+            yield event.plain_result(
+                f"{target_name} 被踢出游戏！\n"
+                f"玩家数量不足 {min_players} 人，游戏自动结束！\n"
+                f"总共进行了 {total_rounds} 轮。感谢大家的参与！"
+            )
+        elif was_target:
             yield event.plain_result(
                 f"{target_name} 被踢出游戏！\n"
                 f"当前轮次已重置，请发送 /td_go 重新开始。\n"
@@ -581,19 +815,6 @@ class TruthOrDarePlugin(Star):
             yield event.plain_result(
                 f"{target_name} 被踢出游戏！\n"
                 f"当前玩家数：{session.get_player_count()}"
-            )
-
-        # 如果玩家不够了，自动结束游戏
-        min_players = self.config.get("min_players", 4)
-        if session.get_player_count() < min_players:
-            total_rounds = session.current_round
-            session.is_started = False
-            session.reset_round()
-            session.players.clear()
-            session.player_order.clear()
-            yield event.plain_result(
-                f"玩家数量不足 {min_players} 人，游戏自动结束！\n"
-                f"总共进行了 {total_rounds} 轮。感谢大家的参与！"
             )
 
     @filter.command("td_stop", alias={"td结束", "tdstop"})
@@ -635,12 +856,14 @@ class TruthOrDarePlugin(Star):
             "5. /td_done  - 完成事件，进入下一轮\n"
             "6. /td_skip  - 跳过当前事件\n\n"
             "其他指令：\n"
-            "/td_list   - 查看玩家列表\n"
-            "/td_result - 查看 Roll 点结果\n"
-            "/td_leave  - 退出游戏\n"
-            "/td_kick   - 踢出 AFK 玩家（管理员）\n"
-            "/td_stop   - 结束游戏\n"
-            "/td_help   - 显示此帮助\n\n"
+            "/td_list       - 查看玩家列表\n"
+            "/td_result     - 查看 Roll 点结果\n"
+            "/td_leave      - 退出游戏\n"
+            "/td_kick       - 踢出 AFK 玩家（管理员）\n"
+            "/td_指定       - 手动指定本轮目标（管理员，优先级高于 Roll 点）\n"
+            "/td_指定清除   - 清除本轮手动指定的目标\n"
+            "/td_stop       - 结束游戏\n"
+            "/td_help       - 显示此帮助\n\n"
             "动态人数规则：\n"
             "4人→抽2人 | 6人→抽3人 | 8人→抽4人\n"
             "每增加2人，事件目标人数+1\n\n"
@@ -651,9 +874,18 @@ class TruthOrDarePlugin(Star):
 
     async def initialize(self):
         """插件初始化"""
+        self._load_sessions()
+        self._save_task = asyncio.create_task(self._periodic_save())
         logger.info("[真心话大冒险] 插件已加载！")
 
     async def terminate(self):
         """插件卸载清理"""
+        if hasattr(self, '_save_task') and self._save_task:
+            self._save_task.cancel()
+            try:
+                await self._save_task
+            except asyncio.CancelledError:
+                pass
+        self._save_sessions()
         self.games.clear()
         logger.info("[真心话大冒险] 插件已卸载！")
