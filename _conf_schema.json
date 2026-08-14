@@ -46,5 +46,17 @@
     "type": "int",
     "default": 0,
     "hint": "完成事件后需要等待多少秒才能开始下一轮，0表示无冷却"
+  },
+  "round_timeout": {
+    "description": "单轮超时时间（秒）",
+    "type": "int",
+    "default": 0,
+    "hint": "被选中的玩家超时未完成/跳过时自动跳过本轮，0表示不启用"
+  },
+  "admin_ids": {
+    "description": "管理员 QQ 号列表（兜底，群角色获取失败时生效）",
+    "type": "list",
+    "default": [],
+    "hint": "填写可执行 /td_指定、/td_kick 等管理员指令的 QQ 号，逗号分隔"
   }
 }

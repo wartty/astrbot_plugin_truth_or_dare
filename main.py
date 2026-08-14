@@ -10,6 +10,7 @@ import random
 import asyncio
 import json
 import os
+import re
 from typing import Dict, List, Optional
 
 from astrbot.api.event import filter, AstrMessageEvent
@@ -40,6 +41,7 @@ class GameSession:
         self.current_round: int = 0                   # 当前轮次
         self.round_in_progress = False                # 当前轮是否正在进行中
         self.last_cooldown_end_time: float = 0.0     # 上一轮结束时间戳（用于冷却）
+        self.current_round_start_time: float = 0.0   # 当前轮开始时间戳（用于超时自动跳过）
         # 当前轮数据（必须初始化，避免 reset_round 引用未定义属性）
         self.current_event_type: Optional[str] = None   # "truth" 或 "dare"
         self.current_event_text: Optional[str] = None    # 事件内容
@@ -82,6 +84,7 @@ class GameSession:
     def reset_round(self):
         """重置轮次状态"""
         self.round_in_progress = False
+        self.current_round_start_time = 0.0
         self.current_event_type = None
         self.current_event_text = None
         self.current_target_ids = []
@@ -117,18 +120,20 @@ class TruthOrDarePlugin(Star):
         return self.games[group_id]
 
     def _parse_truth_questions(self) -> List[str]:
-        """解析真心话题库"""
+        """解析真心话题库（支持换行、逗号、分号、顿号分隔）"""
         raw = self.config.get("truth_questions", "")
         if not raw:
             return []
-        return [q.strip() for q in raw.strip().split("\n") if q.strip()]
+        parts = re.split(r"[\n,，;；、|]+", raw)
+        return [q.strip() for q in parts if q.strip()]
 
     def _parse_dare_tasks(self) -> List[str]:
-        """解析大冒险题库"""
+        """解析大冒险题库（支持换行、逗号、分号、顿号分隔）"""
         raw = self.config.get("dare_tasks", "")
         if not raw:
             return []
-        return [t.strip() for t in raw.strip().split("\n") if t.strip()]
+        parts = re.split(r"[\n,，;；、|]+", raw)
+        return [t.strip() for t in parts if t.strip()]
 
     def _pick_event(self) -> tuple:
         """
@@ -175,6 +180,48 @@ class TruthOrDarePlugin(Star):
         if player_count < 4:
             return min(2, player_count)
         return min(max(2, (player_count - 4) // 2 + 2), player_count)
+
+    def _is_admin(self, event: AstrMessageEvent) -> bool:
+        """判断发送者是否为管理员（群主/群管理 或 配置中的 admin_ids）"""
+        sender_role = (
+            event.get_sender_role() if hasattr(event, "get_sender_role") else None
+        )
+        if sender_role in ("owner", "admin"):
+            return True
+        admin_ids = self.config.get("admin_ids", []) or []
+        if admin_ids:
+            try:
+                sender_id = int(event.get_sender_id())
+            except (ValueError, TypeError):
+                sender_id = None
+            if sender_id is not None and sender_id in admin_ids:
+                return True
+        return False
+
+    def _to_at_id(self, user_id) -> int:
+        """将 user_id 转换为 At 组件所需的 int 类型，失败则原样返回"""
+        try:
+            return int(user_id)
+        except (ValueError, TypeError):
+            return user_id
+
+    def _check_round_timeout(self):
+        """检测进行中的轮次是否超时，超时则自动跳过（解决 AFK 卡死）"""
+        timeout = self.config.get("round_timeout", 0)
+        if timeout <= 0:
+            return
+        now = time.time()
+        for gid, session in self.games.items():
+            if not session.is_started or not session.round_in_progress:
+                continue
+            if session.current_round_start_time and (
+                now - session.current_round_start_time >= timeout
+            ):
+                session.reset_round()
+                session.last_cooldown_end_time = now
+                logger.info(
+                    f"[真心话大冒险] 群 {gid} 第 {session.current_round} 轮超时，已自动跳过"
+                )
 
     # ── 数据持久化 ──────────────────────────────────────────
 
@@ -239,9 +286,10 @@ class TruthOrDarePlugin(Star):
             logger.error(f"[真心话大冒险] 加载游戏数据失败: {e}")
 
     async def _periodic_save(self):
-        """定时自动保存游戏数据（每 30 秒）"""
+        """定时自动保存游戏数据（每 30 秒）并检测轮次超时"""
         while True:
             await asyncio.sleep(30)
+            self._check_round_timeout()
             self._save_sessions()
 
     # ── 指令处理 ──────────────────────────────────────────
@@ -373,6 +421,12 @@ class TruthOrDarePlugin(Star):
             yield event.plain_result("游戏还没开始，请先发送 /td_start 开始游戏！")
             return
 
+        if session.round_in_progress:
+            yield event.plain_result(
+                "当前轮次正在进行中，请完成或跳过本轮（/td_done 或 /td_skip）后再开始下一轮！"
+            )
+            return
+
         if user_id not in session.players:
             yield event.plain_result("你不在游戏中，请先发送 /td_join 加入！")
             return
@@ -440,6 +494,12 @@ class TruthOrDarePlugin(Star):
             yield event.plain_result("游戏还没开始，请先发送 /td_start 开始游戏！")
             return
 
+        if session.round_in_progress:
+            yield event.plain_result(
+                "当前轮次正在进行中，请先 /td_done 确认完成或 /td_skip 跳过，再开始下一轮！"
+            )
+            return
+
         # 检查冷却
         remaining = self._check_cooldown(session)
         if remaining is not None:
@@ -479,14 +539,22 @@ class TruthOrDarePlugin(Star):
         # 优先使用管理员手动指定的目标
         targets: List = []
         is_designated = False
+        designated_note = ""
         if session.designated_ids:
-            for uid in session.designated_ids:
+            designated_requested = list(session.designated_ids)
+            for uid in designated_requested:
                 if uid in session.players:
                     targets.append(session.players[uid])
             # 限缩到目标人数
             if len(targets) > actual_count:
                 targets = targets[:actual_count]
             is_designated = True
+            if not targets:
+                # 指定的玩家均已不在游戏中，提示并清空后按 Roll 点逻辑处理
+                designated_note = (
+                    "\n（管理员手动指定的玩家已不在游戏中，本轮改按 Roll 点结果选择）"
+                )
+                session.designated_ids = []
 
         # 若无指定，走原有 Roll 点逻辑
         if not targets:
@@ -507,6 +575,7 @@ class TruthOrDarePlugin(Star):
         # 记录本轮数据
         session.current_round += 1
         session.round_in_progress = True
+        session.current_round_start_time = time.time()
         session.current_event_type = event_type
         session.current_event_text = event_text
         session.current_target_ids = [t.user_id for t in targets]
@@ -514,7 +583,7 @@ class TruthOrDarePlugin(Star):
 
         # 构建回复（使用 At 组件 @ 被选中的玩家）
         target_names = "、".join(t.user_name for t in targets)
-        at_chain = [At(qq=t.user_id) for t in targets]
+        at_chain = [At(qq=self._to_at_id(t.user_id)) for t in targets]
 
         result = (
             f"第 {session.current_round} 轮\n\n"
@@ -531,6 +600,8 @@ class TruthOrDarePlugin(Star):
         )
         if is_designated:
             result += "\n（本轮由管理员手动指定）"
+        if designated_note:
+            result += designated_note
 
         logger.info(
             f"[真心话大冒险] 群 {group_id} 第 {session.current_round} 轮："
@@ -560,11 +631,8 @@ class TruthOrDarePlugin(Star):
             return
 
         # 权限检查：仅群主/管理员可指定
-        sender_id = event.get_sender_id()
         sender_name = event.get_sender_name()
-        sender_role = event.get_sender_role() if hasattr(event, 'get_sender_role') else None
-        is_admin = sender_role in ("owner", "admin") if sender_role else False
-        if not is_admin:
+        if not self._is_admin(event):
             yield event.plain_result(
                 f"{sender_name}，你没有管理员权限，无法手动指定事件目标！"
             )
@@ -638,11 +706,8 @@ class TruthOrDarePlugin(Star):
             yield event.plain_result("游戏还没开始！")
             return
 
-        sender_id = event.get_sender_id()
         sender_name = event.get_sender_name()
-        sender_role = event.get_sender_role() if hasattr(event, 'get_sender_role') else None
-        is_admin = sender_role in ("owner", "admin") if sender_role else False
-        if not is_admin:
+        if not self._is_admin(event):
             yield event.plain_result(
                 f"{sender_name}，你没有管理员权限，无法清除指定！"
             )
@@ -745,10 +810,8 @@ class TruthOrDarePlugin(Star):
 
         sender_id = event.get_sender_id()
         sender_name = event.get_sender_name()
-        # 获取发送者角色：owner/admin 为管理员
-        sender_role = event.get_sender_role() if hasattr(event, 'get_sender_role') else None
-        # 获取不到角色信息时默认非管理员（安全降级）
-        is_admin = sender_role in ("owner", "admin") if sender_role else False
+        # 管理员判定（群主/群管理 或 配置中的 admin_ids）
+        is_admin = self._is_admin(event)
 
         # 从消息中提取被踢玩家
         message = event.get_message_str()
@@ -797,7 +860,6 @@ class TruthOrDarePlugin(Star):
         if session.get_player_count() < min_players:
             total_rounds = session.current_round
             session.is_started = False
-            session.reset_round()
             session.players.clear()
             session.player_order.clear()
             yield event.plain_result(
