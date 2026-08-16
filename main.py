@@ -49,6 +49,8 @@ class GameSession:
         self.current_target_count: int = 0               # 本轮实际指定人数
         # 管理员手动指定的本轮目标（优先级高于 Roll 点）
         self.designated_ids: List[str] = []              # 指定的玩家 user_id 列表
+        # 本轮已确认完成事件的被选中玩家
+        self.completed_target_ids: List[str] = []
 
     def add_player(self, user_id: str, user_name: str) -> bool:
         """添加玩家，返回是否成功"""
@@ -91,6 +93,8 @@ class GameSession:
         self.current_target_count = 0
         # 清除手动指定名单（本轮已用完，避免影响下一轮）
         self.designated_ids = []
+        # 清除本轮已完成确认记录
+        self.completed_target_ids = []
         # 清除所有玩家的 Roll 记录
         for p in self.players.values():
             p.last_roll = None
@@ -166,6 +170,12 @@ class TruthOrDarePlugin(Star):
             return cooldown - elapsed
         return None
 
+    def _finish_round(self, session: GameSession):
+        """结算当前轮：轮次 +1 并重置本轮状态，记录冷却开始时间"""
+        session.current_round += 1
+        session.reset_round()
+        session.last_cooldown_end_time = time.time()
+
     def _calc_target_count(self, player_count: int) -> int:
         """
         根据玩家总数动态计算事件目标人数。
@@ -182,12 +192,16 @@ class TruthOrDarePlugin(Star):
         return min(max(2, (player_count - 4) // 2 + 2), player_count)
 
     def _is_admin(self, event: AstrMessageEvent) -> bool:
-        """判断发送者是否为管理员（群主/群管理 或 配置中的 admin_ids）"""
+        """判断发送者是否为群主/管理员（兼容中英文角色字段；可回退到 config 中的 admin_ids）"""
         sender_role = (
             event.get_sender_role() if hasattr(event, "get_sender_role") else None
         )
-        if sender_role in ("owner", "admin"):
-            return True
+        if sender_role:
+            # 归一化角色字段，兼容不同平台的大小写/中文取值
+            role_key = str(sender_role).strip().lower()
+            if role_key in ("owner", "admin", "administrator", "creator", "群主", "管理员", "管理"):
+                return True
+        # 兜底：匹配配置中指定的管理员 user_id
         admin_ids = self.config.get("admin_ids", []) or []
         if admin_ids:
             try:
@@ -279,6 +293,7 @@ class TruthOrDarePlugin(Star):
                 session.current_event_text = None
                 session.current_target_ids = []
                 session.current_target_count = 0
+                session.completed_target_ids = []
                 self.games[gid] = session
             if self.games:
                 logger.info(f"[真心话大冒险] 已恢复 {len(self.games)} 个群的游戏会话")
@@ -494,9 +509,17 @@ class TruthOrDarePlugin(Star):
             yield event.plain_result("游戏还没开始，请先发送 /td_start 开始游戏！")
             return
 
+# 本轮已在进行：必须先由被选中玩家结算（/td_done 或 /td_skip），才能开新一轮
+        # 这一拦截防止任何人反复 /td_go 刷取目标或刷高轮次
         if session.round_in_progress:
+            in_progress_names = "、".join(
+                session.players[uid].user_name
+                for uid in session.current_target_ids
+                if uid in session.players
+            )
             yield event.plain_result(
-                "当前轮次正在进行中，请先 /td_done 确认完成或 /td_skip 跳过，再开始下一轮！"
+                f"本轮正在进行中！请 {in_progress_names} 完成事件后发送 /td_done 确认，"
+                f"或由被选中的玩家发送 /td_skip 跳过！"
             )
             return
 
@@ -506,16 +529,18 @@ class TruthOrDarePlugin(Star):
             yield event.plain_result(f"冷却中，请等待 {remaining:.0f} 秒后再开始下一轮！")
             return
 
-        # 检查是否所有人都 Roll 了（手动指定的情况下允许部分未 Roll）
-        if not session.designated_ids:
-            unrolled = [p for p in session.players.values() if p.last_roll is None]
-            if unrolled:
-                names = "、".join(p.user_name for p in unrolled)
-                yield event.plain_result(
-                    f"以下玩家还没 Roll 点：\n{names}\n\n"
-                    f"请发送 /td_roll 完成 Roll 点后再继续！"
-                )
-                return
+        # 检查 Roll 状态：未被管理员手动指定的玩家都必须 Roll（修复原「指定时全员免 Roll」漏洞）
+        unrolled = [
+            p for p in session.players.values()
+            if p.last_roll is None and p.user_id not in session.designated_ids
+        ]
+        if unrolled:
+            names = "、".join(p.user_name for p in unrolled)
+            yield event.plain_result(
+                f"以下玩家（未被手动指定）还没 Roll 点：\n{names}\n\n"
+                f"请发送 /td_roll 完成 Roll 点后再继续！"
+            )
+            return
 
         # 找出 Roll 点最低的玩家
         all_players = list(session.players.values())
@@ -572,25 +597,31 @@ class TruthOrDarePlugin(Star):
                     extra = random.sample(remaining_pool, min(extra_needed, len(remaining_pool)))
                     targets.extend(extra)
 
-        # 记录本轮数据
-        session.current_round += 1
+        # 记录本轮数据（轮次编号 = 已结算轮数 + 1，递增移到 _finish_round）
         session.round_in_progress = True
         session.current_round_start_time = time.time()
         session.current_event_type = event_type
         session.current_event_text = event_text
         session.current_target_ids = [t.user_id for t in targets]
         session.current_target_count = len(targets)  # 使用实际选中人数
+        # 重置本轮逐人确认状态（让所有被选中的玩家重新走 /td_done 确认）
+        session.completed_target_ids = []
 
         # 构建回复（使用 At 组件 @ 被选中的玩家）
         target_names = "、".join(t.user_name for t in targets)
         at_chain = [At(qq=self._to_at_id(t.user_id)) for t in targets]
 
         result = (
-            f"第 {session.current_round} 轮\n\n"
+            f"第 {session.current_round + 1} 轮\n\n"
             f"Roll 点结果：\n"
         )
-        for p in sorted(all_players, key=lambda x: x.last_roll):
-            result += f"  {p.user_name}：{p.last_roll}\n"
+        # 排序键：为 last_roll 为 None 的玩家提供无穷大兜底，避免 None 与 int 比较崩溃
+        for p in sorted(
+            all_players,
+            key=lambda x: x.last_roll if x.last_roll is not None else float("inf"),
+        ):
+            roll_text = str(p.last_roll) if p.last_roll is not None else "未Roll"
+            result += f"  {p.user_name}：{roll_text}\n"
 
         result += (
             f"\n被选中的玩家（{len(targets)}人）：{target_names}\n"
@@ -604,7 +635,7 @@ class TruthOrDarePlugin(Star):
             result += designated_note
 
         logger.info(
-            f"[真心话大冒险] 群 {group_id} 第 {session.current_round} 轮："
+            f"[真心话大冒险] 群 {group_id} 第 {session.current_round + 1} 轮："
             f"类型={event_type}，目标={target_names}，事件={event_text}"
         )
 
@@ -630,7 +661,7 @@ class TruthOrDarePlugin(Star):
             yield event.plain_result("游戏还没开始，请先发送 /td_start 开始游戏！")
             return
 
-        # 权限检查：仅群主/管理员可指定
+# 权限检查：仅群主/管理员可指定（判定由 _is_admin 统一处理，兼容角色字段与 admin_ids）
         sender_name = event.get_sender_name()
         if not self._is_admin(event):
             yield event.plain_result(
@@ -746,13 +777,39 @@ class TruthOrDarePlugin(Star):
             yield event.plain_result(f"{user_name} 不是本轮被选中的玩家，无法确认完成！")
             return
 
-        # 重置轮次并进入下一轮
-        session.reset_round()
-        session.last_cooldown_end_time = time.time()
+        # 防止同一玩家重复确认
+        if user_id in session.completed_target_ids:
+            yield event.plain_result(f"{user_name} 已经确认过完成本轮事件了！")
+            return
+
+        # 记录该玩家已完成
+        session.completed_target_ids.append(user_id)
+
+        # 仍有其他被选中玩家未完成 → 等待，不进入下一轮
+        remaining_ids = [
+            uid for uid in session.current_target_ids
+            if uid not in session.completed_target_ids
+        ]
+        if remaining_ids:
+            remaining_names = "、".join(
+                session.players[uid].user_name
+                for uid in remaining_ids if uid in session.players
+            )
+            yield event.plain_result(
+                f"{user_name} 已完成事件！\n\n"
+                f"本轮共有 {len(session.current_target_ids)} 名被选中的玩家，"
+                f"还有 {len(remaining_ids)} 人未完成：\n{remaining_names}\n\n"
+                f"请他们完成后发送 /td_done 确认。"
+            )
+            return
+
+        # 全部被选中玩家均确认完成 → 统一结算本轮
+        self._finish_round(session)
 
         yield event.plain_result(
             f"{user_name} 完成了事件！\n\n"
-            f"本轮结束！请发送 /td_go 开始下一轮！"
+            f"所有被选中的玩家均已完成，本轮结束！\n"
+            f"请发送 /td_go 开始下一轮！"
         )
 
     @filter.command("td_skip", alias={"td跳过", "tdskip"})
@@ -784,9 +841,8 @@ class TruthOrDarePlugin(Star):
         event_text = session.current_event_text
         type_label = "真心话" if event_type == "truth" else "大冒险"
 
-        # 重置轮次
-        session.reset_round()
-        session.last_cooldown_end_time = time.time()
+        # 跳过视为结算本轮：统一走 _finish_round（递增轮次 + 重置状态 + 启动冷却）
+        self._finish_round(session)
 
         yield event.plain_result(
             f"{user_name} 跳过了本轮事件！\n"
@@ -810,7 +866,7 @@ class TruthOrDarePlugin(Star):
 
         sender_id = event.get_sender_id()
         sender_name = event.get_sender_name()
-        # 管理员判定（群主/群管理 或 配置中的 admin_ids）
+        # 管理员判定（群主/群管理 或 配置中的 admin_ids，由 _is_admin 统一处理）
         is_admin = self._is_admin(event)
 
         # 从消息中提取被踢玩家
@@ -852,13 +908,14 @@ class TruthOrDarePlugin(Star):
         was_target = target_id in session.current_target_ids
         session.remove_player(target_id)
         if was_target:
-            session.reset_round()
-            session.last_cooldown_end_time = time.time()
+            # 踢掉的是当前轮被选中的玩家 → 统一走 _finish_round 结算（递增轮次+重置+冷却）
+            self._finish_round(session)
 
         # 检查人数是否不足，不足则自动结束游戏
         min_players = self.config.get("min_players", 4)
         if session.get_player_count() < min_players:
-            total_rounds = session.current_round
+            # 计入正在进行但尚未结算的轮次，让 "总共进行了 N 轮" 更贴近实际
+            total_rounds = session.current_round + (1 if session.round_in_progress else 0)
             session.is_started = False
             session.players.clear()
             session.player_order.clear()
@@ -870,7 +927,7 @@ class TruthOrDarePlugin(Star):
         elif was_target:
             yield event.plain_result(
                 f"{target_name} 被踢出游戏！\n"
-                f"当前轮次已重置，请发送 /td_go 重新开始。\n"
+                f"当前轮次已结算，请发送 /td_go 开始新一轮。\n"
                 f"当前玩家数：{session.get_player_count()}"
             )
         else:
@@ -893,7 +950,7 @@ class TruthOrDarePlugin(Star):
             yield event.plain_result("游戏还没开始！")
             return
 
-        total_rounds = session.current_round
+        total_rounds = session.current_round + (1 if session.round_in_progress else 0)
         session.is_started = False
         session.reset_round()
         session.players.clear()
