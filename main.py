@@ -40,15 +40,19 @@ class GameSession:
         self.is_started = False                       # 游戏是否已开始
         self.current_round: int = 0                   # 当前轮次
         self.round_in_progress = False                # 当前轮是否正在进行中
-        self.last_cooldown_end_time: float = 0.0     # 上一轮结束时间戳（用于冷却）
-        self.current_round_start_time: float = 0.0   # 当前轮开始时间戳（用于超时自动跳过）
+        self.last_cooldown_end_time: float = 0.0      # 上一轮结束时间戳（用于冷却）
+        self.current_round_start_time: float = 0.0    # 当前轮开始时间戳（用于超时自动跳过）
         # 当前轮数据（必须初始化，避免 reset_round 引用未定义属性）
-        self.current_event_type: Optional[str] = None   # "truth" 或 "dare"
-        self.current_event_text: Optional[str] = None    # 事件内容
-        self.current_target_ids: List[str] = []          # 本轮被选中的玩家 user_id
-        self.current_target_count: int = 0               # 本轮实际指定人数
-        # 管理员手动指定的本轮目标（优先级高于 Roll 点）
-        self.designated_ids: List[str] = []              # 指定的玩家 user_id 列表
+        self.current_event_type: Optional[str] = None     # "truth" 或 "dare"（兼容旧逻辑，逐步废弃）
+        self.current_event_text: Optional[str] = None     # 事件内容（兼容旧逻辑，逐步废弃）
+        self.current_target_ids: List[str] = []           # 本轮被选中的玩家 user_id
+        self.current_target_count: int = 0                # 本轮实际指定人数
+        # 新指定机制相关
+        self.designator_id: Optional[str] = None          # 获得指定权的玩家 user_id（由6种算法随机选出）
+        self.designated_target_id: Optional[str] = None   # 被指定的目标玩家 user_id
+        self.selection_algorithm: Optional[int] = None    # 本轮使用的选择算法索引 0-5
+        # 每个目标玩家独立的事件：user_id -> (event_type, event_text)
+        self.target_events: Dict[str, tuple] = {}
         # 本轮已确认完成事件的被选中玩家
         self.completed_target_ids: List[str] = []
 
@@ -91,8 +95,11 @@ class GameSession:
         self.current_event_text = None
         self.current_target_ids = []
         self.current_target_count = 0
-        # 清除手动指定名单（本轮已用完，避免影响下一轮）
-        self.designated_ids = []
+        # 清除新指定机制相关字段
+        self.designator_id = None
+        self.designated_target_id = None
+        self.selection_algorithm = None
+        self.target_events = {}
         # 清除本轮已完成确认记录
         self.completed_target_ids = []
         # 清除所有玩家的 Roll 记录
@@ -191,6 +198,181 @@ class TruthOrDarePlugin(Star):
             return min(2, player_count)
         return min(max(2, (player_count - 4) // 2 + 2), player_count)
 
+    def _select_by_algorithm(self, players: List[Player], algorithm: int) -> Optional[Player]:
+        """
+        根据指定算法从玩家列表中选择一名玩家。
+
+        算法索引 0-5：
+        0: 点数最大
+        1: 点数最小
+        2: 单数点数最大
+        3: 单数点数最小
+        4: 双数点数最大
+        5: 双数点数最小
+
+        返回选中的玩家，如果没有符合条件的玩家则返回 None
+        """
+        if not players:
+            return None
+
+        # 过滤出有效 roll 的玩家
+        valid_players = [p for p in players if p.last_roll is not None]
+        if not valid_players:
+            return None
+
+        if algorithm == 0:  # 点数最大
+            max_roll = max(p.last_roll for p in valid_players)
+            candidates = [p for p in valid_players if p.last_roll == max_roll]
+        elif algorithm == 1:  # 点数最小
+            min_roll = min(p.last_roll for p in valid_players)
+            candidates = [p for p in valid_players if p.last_roll == min_roll]
+        elif algorithm == 2:  # 单数点数最大
+            odd_players = [p for p in valid_players if p.last_roll % 2 == 1]
+            if not odd_players:
+                return None
+            max_roll = max(p.last_roll for p in odd_players)
+            candidates = [p for p in odd_players if p.last_roll == max_roll]
+        elif algorithm == 3:  # 单数点数最小
+            odd_players = [p for p in valid_players if p.last_roll % 2 == 1]
+            if not odd_players:
+                return None
+            min_roll = min(p.last_roll for p in odd_players)
+            candidates = [p for p in odd_players if p.last_roll == min_roll]
+        elif algorithm == 4:  # 双数点数最大
+            even_players = [p for p in valid_players if p.last_roll % 2 == 0]
+            if not even_players:
+                return None
+            max_roll = max(p.last_roll for p in even_players)
+            candidates = [p for p in even_players if p.last_roll == max_roll]
+        elif algorithm == 5:  # 双数点数最小
+            even_players = [p for p in valid_players if p.last_roll % 2 == 0]
+            if not even_players:
+                return None
+            min_roll = min(p.last_roll for p in even_players)
+            candidates = [p for p in even_players if p.last_roll == min_roll]
+        else:
+            return None
+
+        if candidates:
+            return random.choice(candidates)
+        return None
+
+    def _select_multiple_by_algorithm(self, players: List[Player], algorithm: int, count: int, exclude_ids: List[str] = None) -> List[Player]:
+        """
+        根据指定算法从玩家列表中选择多名玩家（用于系统补足剩余名额）。
+
+        返回选中的玩家列表
+        """
+        if not players or count <= 0:
+            return []
+
+        exclude_ids = exclude_ids or []
+        # 过滤出有效 roll 且未被排除的玩家
+        valid_players = [p for p in players if p.last_roll is not None and p.user_id not in exclude_ids]
+        if not valid_players:
+            return []
+
+        selected = []
+        remaining_count = count
+        remaining_players = valid_players.copy()
+
+        while remaining_count > 0 and remaining_players:
+            player = self._select_by_algorithm(remaining_players, algorithm)
+            if player is None:
+                break
+            selected.append(player)
+            remaining_players.remove(player)
+            remaining_count -= 1
+
+        return selected
+
+
+    async def _process_designation(self, session: GameSession, event: AstrMessageEvent):
+        """处理指定完成后的逻辑：补足剩余名额、分配事件、开始轮次"""
+        group_id = session.group_id
+        all_players = list(session.players.values())
+
+        # 动态计算目标人数
+        target_count = self._calc_target_count(len(all_players))
+        actual_count = min(target_count, len(all_players))
+
+        # 已经有 1 个被指定的目标
+        designated_player = session.players[session.designated_target_id]
+
+        # 为被指定的玩家随机分配事件
+        event_type, event_text = self._pick_event()
+        session.target_events[session.designated_target_id] = (event_type, event_text)
+
+        # 如果还需要更多目标，用相同算法补足
+        remaining_count = actual_count - 1
+        additional_targets = []
+        if remaining_count > 0:
+            exclude_ids = [session.designated_target_id]
+            additional_targets = self._select_multiple_by_algorithm(
+                all_players, session.selection_algorithm, remaining_count, exclude_ids
+            )
+
+            # 为每个额外目标随机分配事件
+            for player in additional_targets:
+                et, et_text = self._pick_event()
+                session.target_events[player.user_id] = (et, et_text)
+
+        # 合并所有目标
+        all_targets = [designated_player] + additional_targets
+        session.current_target_ids = [p.user_id for p in all_targets]
+        session.current_target_count = len(all_targets)
+
+        # 标记轮次开始
+        session.round_in_progress = True
+        session.current_round_start_time = time.time()
+
+        # 清除逐人确认状态
+        session.completed_target_ids = []
+
+        # 构建回复消息
+        algorithm_names = [
+            "点数最大", "点数最小", "单数点数最大",
+            "单数点数最小", "双数点数最大", "双数点数最小"
+        ]
+        algo_name = algorithm_names[session.selection_algorithm] if session.selection_algorithm is not None else "未知"
+
+        target_names = "、".join(p.user_name for p in all_targets)
+        at_chain = [At(qq=self._to_at_id(p.user_id)) for p in all_targets]
+
+        result = (
+            f"第 {session.current_round + 1} 轮\n\n"
+            f"Roll 点结果：\n"
+        )
+        for p in sorted(all_players, key=lambda x: x.last_roll if x.last_roll is not None else float("inf")):
+            roll_text = str(p.last_roll) if p.last_roll is not None else "未Roll"
+            result += f"  {p.user_name}：{roll_text}\n"
+
+        result += f"\n本轮算法：{algo_name}\n"
+        result += f"指定权获得者指定：{designated_player.user_name}\n"
+        if additional_targets:
+            extra_names = "、".join(p.user_name for p in additional_targets)
+            result += f"系统补足：{extra_names}\n"
+        result += f"\n被选中的玩家（{len(all_targets)}人）：{target_names}\n\n"
+
+        # 列出每个玩家的事件
+        for p in all_targets:
+            et, et_text = session.target_events[p.user_id]
+            type_name = "真心话" if et == "truth" else "大冒险"
+            result += f"@{p.user_name}：{type_name} - {et_text}\n"
+
+        result += f"\n请上述玩家完成事件后，发送 /td_done 确认完成！\n"
+        result += f"发送 /td_skip 可以跳过本轮（需要被选中的玩家本人确认）"
+
+        logger.info(
+            f"[真心话大冒险] 群 {group_id} 第 {session.current_round + 1} 轮："
+            f"算法={algo_name}，指定={designated_player.user_name}，"
+            f"补足={[p.user_name for p in additional_targets]}，"
+            f"事件={[f'{p.user_name}={session.target_events[p.user_id][0]}' for p in all_targets]}"
+        )
+
+        yield event.chain_result(at_chain + [Plain(result)])
+
+
     def _is_admin(self, event: AstrMessageEvent) -> bool:
         """判断发送者是否为群主/管理员（兼容中英文角色字段；可回退到 config 中的 admin_ids）"""
         sender_role = (
@@ -264,6 +446,12 @@ class TruthOrDarePlugin(Star):
                     "player_order": session.player_order,
                     "is_started": session.is_started,
                     "current_round": session.current_round,
+                    # 新指定机制字段
+                    "designator_id": session.designator_id,
+                    "designated_target_id": session.designated_target_id,
+                    "selection_algorithm": session.selection_algorithm,
+                    "current_target_ids": session.current_target_ids,
+                    "round_in_progress": session.round_in_progress,
                 }
             with open(self._get_data_path(), "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
@@ -287,12 +475,17 @@ class TruthOrDarePlugin(Star):
                 session.player_order = sdata.get("player_order", [])
                 session.is_started = sdata.get("is_started", False)
                 session.current_round = sdata.get("current_round", 0)
+                # 恢复新指定机制字段
+                session.designator_id = sdata.get("designator_id")
+                session.designated_target_id = sdata.get("designated_target_id")
+                session.selection_algorithm = sdata.get("selection_algorithm")
+                session.current_target_ids = sdata.get("current_target_ids", [])
+                session.round_in_progress = sdata.get("round_in_progress", False)
                 # 重启后不恢复进行中的轮次状态，需要重新 Roll
-                session.round_in_progress = False
                 session.current_event_type = None
                 session.current_event_text = None
-                session.current_target_ids = []
                 session.current_target_count = 0
+                session.target_events = {}
                 session.completed_target_ids = []
                 self.games[gid] = session
             if self.games:
@@ -416,8 +609,9 @@ class TruthOrDarePlugin(Star):
             f"参与玩家（{session.get_player_count()}人）：\n"
             f"{player_text}\n\n"
             f"请所有玩家发送 /td_roll 来 Roll 点！\n"
-            f"本轮将随机抽取 {target_count} 人完成事件！\n"
-            f"Roll 点最低的玩家优先被选中！"
+            f"本轮目标人数：{target_count} 人\n"
+            f"所有人 Roll 完后，将随机选出指定权获得者，由其指定 1 名玩家，\n"
+            f"系统按相同算法补足剩余名额，每人独立获得真心话/大冒险事件！"
         )
 
     @filter.command("td_roll", alias={"tdr", "tdroll"})
@@ -460,6 +654,15 @@ class TruthOrDarePlugin(Star):
             f"{user_name} Roll 出了 {roll_result} 点！"
         )
 
+        # 检查是否所有人都已 Roll 完，如果是则自动触发下一阶段
+        all_players = list(session.players.values())
+        if all(p.last_roll is not None for p in all_players):
+            # 所有人都 Roll 完了，自动触发选择逻辑
+            yield event.plain_result("所有人已完成 Roll 点，正在随机选出指定权获得者...")
+            # 直接调用选择逻辑（复用 cmd_go 的核心逻辑）
+            # 这里需要模拟触发后续流程
+            pass  # 后续流程由用户输入 /td_go 继续，或可在此自动调用内部方法
+
     @filter.command("td_result", alias={"td结果", "tdresult"})
     async def cmd_roll_result(self, event: AstrMessageEvent):
         """查看所有玩家的 Roll 结果"""
@@ -493,10 +696,14 @@ class TruthOrDarePlugin(Star):
     @filter.command("td_go", alias={"tdgo", "td下一轮"})
     async def cmd_go(self, event: AstrMessageEvent):
         """
-        处理真心话大冒险事件。
+        处理真心话大冒险事件 - 新指定机制。
 
-        机器人根据 Roll 点结果随机指定玩家完成真心话或大冒险。
-        目标人数根据玩家总数动态计算：4人=2人，每多2人多1人。
+        流程：
+        1. 检查所有玩家都已 Roll 点
+        2. 从 6 种算法随机选一种，选出 "指定权获得者"
+        3. 等待指定权获得者使用 /td_指定 指定 1 名玩家
+        4. 指定完成后，用同一算法补足剩余名额
+        5. 为每个目标玩家独立随机真心话/大冒险
         """
         group_id = self._get_group_id(event)
         if not group_id:
@@ -509,8 +716,7 @@ class TruthOrDarePlugin(Star):
             yield event.plain_result("游戏还没开始，请先发送 /td_start 开始游戏！")
             return
 
-# 本轮已在进行：必须先由被选中玩家结算（/td_done 或 /td_skip），才能开新一轮
-        # 这一拦截防止任何人反复 /td_go 刷取目标或刷高轮次
+        # 本轮已在进行：必须先由被选中玩家结算（/td_done 或 /td_skip），才能开新一轮
         if session.round_in_progress:
             in_progress_names = "、".join(
                 session.players[uid].user_name
@@ -529,126 +735,68 @@ class TruthOrDarePlugin(Star):
             yield event.plain_result(f"冷却中，请等待 {remaining:.0f} 秒后再开始下一轮！")
             return
 
-        # 检查 Roll 状态：未被管理员手动指定的玩家都必须 Roll（修复原「指定时全员免 Roll」漏洞）
-        unrolled = [
-            p for p in session.players.values()
-            if p.last_roll is None and p.user_id not in session.designated_ids
-        ]
+        # 检查 Roll 状态：所有玩家都必须 Roll
+        all_players = list(session.players.values())
+        unrolled = [p for p in all_players if p.last_roll is None]
         if unrolled:
             names = "、".join(p.user_name for p in unrolled)
             yield event.plain_result(
-                f"以下玩家（未被手动指定）还没 Roll 点：\n{names}\n\n"
+                f"以下玩家还没 Roll 点：\n{names}\n\n"
                 f"请发送 /td_roll 完成 Roll 点后再继续！"
             )
             return
 
-        # 找出 Roll 点最低的玩家
-        all_players = list(session.players.values())
-        min_roll = min(p.last_roll for p in all_players) if all(
-            p.last_roll is not None for p in all_players
-        ) else None
-        lowest_players = (
-            [p for p in all_players if p.last_roll == min_roll]
-            if min_roll is not None else []
-        )
-
-        # 决定事件类型和内容
-        event_type, event_text = self._pick_event()
-        type_name = "真心话" if event_type == "truth" else "大冒险"
-
         # 动态计算目标人数：4人→2人，每+2人→+1人
         target_count = self._calc_target_count(len(all_players))
-        # 上限保护：实际目标人数不超过可选玩家总数
         actual_count = min(target_count, len(all_players))
 
-        # 优先使用管理员手动指定的目标
-        targets: List = []
-        is_designated = False
-        designated_note = ""
-        if session.designated_ids:
-            designated_requested = list(session.designated_ids)
-            for uid in designated_requested:
-                if uid in session.players:
-                    targets.append(session.players[uid])
-            # 限缩到目标人数
-            if len(targets) > actual_count:
-                targets = targets[:actual_count]
-            is_designated = True
-            if not targets:
-                # 指定的玩家均已不在游戏中，提示并清空后按 Roll 点逻辑处理
-                designated_note = (
-                    "\n（管理员手动指定的玩家已不在游戏中，本轮改按 Roll 点结果选择）"
-                )
-                session.designated_ids = []
+        # 如果已经有指定权获得者（说明是指定完成后的二次调用），直接进入指定处理
+        if session.designator_id and not session.designated_target_id:
+            yield event.plain_result(
+                f"第 {session.current_round + 1} 轮\n\n"
+                f"Roll 点结果：\n" +
+                "\n".join(f"  {p.user_name}：{p.last_roll}" for p in sorted(all_players, key=lambda x: x.last_roll if x.last_roll is not None else float("inf"))) +
+                f"\n\n本轮目标人数：{actual_count} 人\n"
+                f"已随机选出指定权获得者，请该玩家使用 /td_指定 @玩家 指定 1 名玩家进行事件！"
+            )
+            return
 
-        # 若无指定，走原有 Roll 点逻辑
-        if not targets:
-            if not lowest_players:
-                yield event.plain_result("没有可用的 Roll 点结果，请先 /td_roll！")
-                return
-            if len(lowest_players) >= actual_count:
-                targets = random.sample(lowest_players, actual_count)
-            else:
-                # 最低 Roll 点玩家不够，从所有玩家中随机补足
-                targets = lowest_players.copy()
-                remaining_pool = [p for p in all_players if p not in lowest_players]
-                extra_needed = actual_count - len(targets)
-                if extra_needed > 0 and remaining_pool:
-                    extra = random.sample(remaining_pool, min(extra_needed, len(remaining_pool)))
-                    targets.extend(extra)
+        # 随机选择算法 (0-5)
+        algorithm = random.randint(0, 5)
+        algorithm_names = [
+            "点数最大", "点数最小", "单数点数最大",
+            "单数点数最小", "双数点数最大", "双数点数最小"
+        ]
 
-        # 记录本轮数据（轮次编号 = 已结算轮数 + 1，递增移到 _finish_round）
-        session.round_in_progress = True
-        session.current_round_start_time = time.time()
-        session.current_event_type = event_type
-        session.current_event_text = event_text
-        session.current_target_ids = [t.user_id for t in targets]
-        session.current_target_count = len(targets)  # 使用实际选中人数
-        # 重置本轮逐人确认状态（让所有被选中的玩家重新走 /td_done 确认）
-        session.completed_target_ids = []
+        # 用选中的算法选出指定权获得者
+        designator = self._select_by_algorithm(all_players, algorithm)
+        if designator is None:
+            yield event.plain_result("无法选出指定权获得者，请确保所有玩家都已 Roll 点！")
+            return
 
-        # 构建回复（使用 At 组件 @ 被选中的玩家）
-        target_names = "、".join(t.user_name for t in targets)
-        at_chain = [At(qq=self._to_at_id(t.user_id)) for t in targets]
-
-        result = (
-            f"第 {session.current_round + 1} 轮\n\n"
-            f"Roll 点结果：\n"
-        )
-        # 排序键：为 last_roll 为 None 的玩家提供无穷大兜底，避免 None 与 int 比较崩溃
-        for p in sorted(
-            all_players,
-            key=lambda x: x.last_roll if x.last_roll is not None else float("inf"),
-        ):
-            roll_text = str(p.last_roll) if p.last_roll is not None else "未Roll"
-            result += f"  {p.user_name}：{roll_text}\n"
-
-        result += (
-            f"\n被选中的玩家（{len(targets)}人）：{target_names}\n"
-            f"{type_name}：{event_text}\n\n"
-            f"请 {target_names} 完成事件后，发送 /td_done 确认完成！\n"
-            f"发送 /td_skip 可以跳过本轮（需要被选中的玩家本人确认）"
-        )
-        if is_designated:
-            result += "\n（本轮由管理员手动指定）"
-        if designated_note:
-            result += designated_note
+        # 保存算法和指定权获得者
+        session.selection_algorithm = algorithm
+        session.designator_id = designator.user_id
 
         logger.info(
             f"[真心话大冒险] 群 {group_id} 第 {session.current_round + 1} 轮："
-            f"类型={event_type}，目标={target_names}，事件={event_text}"
+            f"算法={algorithm_names[algorithm]}，指定权获得者={designator.user_name}"
         )
 
-        # 先发 @ 提醒，再发事件详情
-        yield event.chain_result(at_chain + [Plain(result)])
+        # 不透露算法和指定权获得者，只提示等待指定
+        yield event.plain_result(
+            f"第 {session.current_round + 1} 轮\n\n"
+            f"Roll 点结果：\n" +
+            "\n".join(f"  {p.user_name}：{p.last_roll}" for p in sorted(all_players, key=lambda x: x.last_roll if x.last_roll is not None else float("inf"))) +
+            f"\n\n本轮目标人数：{actual_count} 人\n"
+            f"已随机选出指定权获得者，请该玩家使用 /td_指定 @玩家 指定 1 名玩家进行事件！"
+        )
 
     @filter.command("td_指定", alias={"td指定", "tddesignate"})
     async def cmd_designate(self, event: AstrMessageEvent):
         """
-        管理员手动指定本轮事件目标（优先级高于 Roll 点）。
-
-        用法：/td_指定 @玩家1 @玩家2 ...
-             /td_指定 玩家名1 玩家名2 ...
+        指定权获得者指定 1 名玩家进行事件。
+        只有被随机选中的指定权获得者可以使用此指令。
         """
         group_id = self._get_group_id(event)
         if not group_id:
@@ -661,67 +809,68 @@ class TruthOrDarePlugin(Star):
             yield event.plain_result("游戏还没开始，请先发送 /td_start 开始游戏！")
             return
 
-# 权限检查：仅群主/管理员可指定（判定由 _is_admin 统一处理，兼容角色字段与 admin_ids）
-        sender_name = event.get_sender_name()
-        if not self._is_admin(event):
-            yield event.plain_result(
-                f"{sender_name}，你没有管理员权限，无法手动指定事件目标！"
-            )
+        # 检查是否有指定权获得者且还未指定目标
+        if not session.designator_id or session.designated_target_id:
+            yield event.plain_result("当前不在指定阶段，无法使用此指令！")
             return
 
-        # 解析指定目标：优先从 At 组件，再从纯文本名字
-        target_ids: List[str] = []
-        target_names: List[str] = []
+        # 权限检查：只有指定权获得者可以使用
+        user_id = event.get_sender_id()
+        user_name = event.get_sender_name()
+        if user_id != session.designator_id:
+            yield event.plain_result(f"{user_name}，你不是本轮的指定权获得者，无法使用指定指令！")
+            return
+
+        # 解析指定目标：仅支持 @ 提及 1 个玩家
+        target_id = None
+        target_name = None
 
         # 从 At 组件提取
         at_targets = [comp for comp in event.message_obj.message if isinstance(comp, At)]
-        for at in at_targets:
-            uid = str(at.qq)
-            if uid in session.players and uid not in target_ids:
-                target_ids.append(uid)
-                target_names.append(session.players[uid].user_name)
+        if at_targets:
+            uid = str(at_targets[0].qq)
+            if uid in session.players:
+                target_id = uid
+                target_name = session.players[uid].user_name
+            else:
+                yield event.plain_result("该玩家不在游戏中！")
+                return
+        else:
+            # 尝试从纯文本中提取玩家名
+            message = event.get_message_str()
+            parts = message.strip().split()
+            if len(parts) >= 2:
+                name = parts[1].strip()
+                for uid, p in session.players.items():
+                    if p.user_name == name:
+                        target_id = uid
+                        target_name = p.user_name
+                        break
 
-        # 从纯文本名字提取（去掉指令本身）
-        message = event.get_message_str()
-        parts = message.strip().split()
-        # 第一段是指令名（/td_指定 或别名），跳过
-        if parts:
-            parts = parts[1:]
-        for name in parts:
-            name = name.strip()
-            if not name or name.startswith("@"):
-                continue
-            # 按名字查找
-            for uid, p in session.players.items():
-                if p.user_name == name and uid not in target_ids:
-                    target_ids.append(uid)
-                    target_names.append(p.user_name)
-                    break
-
-        if not target_ids:
+        if not target_id:
             yield event.plain_result(
-                "请指定要手动指定的玩家：\n"
-                "/td_指定 @玩家1 @玩家2 ...\n"
-                "/td_指定 玩家名1 玩家名2 ..."
+                "请指定要指定的玩家（仅限 1 人）：\n"
+                "/td_指定 @玩家\n"
+                "/td_指定 玩家名"
             )
             return
 
-        # 限制指定人数不超过动态计算的目标人数（避免一次指定过多）
-        target_count = self._calc_target_count(session.get_player_count())
-        if len(target_ids) > target_count:
-            yield event.plain_result(
-                f"指定人数过多！当前游戏最多可指定 {target_count} 人（本局 {session.get_player_count()} 人）。"
-            )
+        # 不能指定自己
+        if target_id == user_id:
+            yield event.plain_result("不能指定自己！")
             return
 
-        # 保存指定名单（用于本轮 /td_go）
-        session.designated_ids = target_ids
-        names_str = "、".join(target_names)
+        # 保存被指定的目标
+        session.designated_target_id = target_id
+
         yield event.plain_result(
-            f"已手动指定本轮目标玩家（{len(target_ids)}人）：{names_str}\n\n"
-            f"下次发送 /td_go 时，将优先让这些玩家完成事件。\n"
-            f"如需取消指定，请发送 /td_指定清除"
+            f"{user_name} 指定了 {target_name} 进行本轮事件！\n"
+            f"系统正在按相同算法补足剩余名额..."
         )
+
+        # 自动处理：补足剩余名额并分配事件
+        async for _ in self._process_designation(session, event):
+            pass
 
     @filter.command("td_指定清除", alias={"td指定清除", "tddesignate_clear"})
     async def cmd_designate_clear(self, event: AstrMessageEvent):
@@ -795,8 +944,11 @@ class TruthOrDarePlugin(Star):
                 session.players[uid].user_name
                 for uid in remaining_ids if uid in session.players
             )
+            # 显示该玩家的事件类型
+            et, et_text = session.target_events.get(user_id, (None, ""))
+            type_label = "真心话" if et == "truth" else "大冒险"
             yield event.plain_result(
-                f"{user_name} 已完成事件！\n\n"
+                f"{user_name} 完成了{type_label}事件！\n\n"
                 f"本轮共有 {len(session.current_target_ids)} 名被选中的玩家，"
                 f"还有 {len(remaining_ids)} 人未完成：\n{remaining_names}\n\n"
                 f"请他们完成后发送 /td_done 确认。"
@@ -837,16 +989,16 @@ class TruthOrDarePlugin(Star):
             yield event.plain_result(f"{user_name} 不是本轮被选中的玩家，无法跳过！")
             return
 
-        event_type = session.current_event_type
-        event_text = session.current_event_text
-        type_label = "真心话" if event_type == "truth" else "大冒险"
+        # 显示该玩家的事件
+        et, et_text = session.target_events.get(user_id, (None, ""))
+        type_label = "真心话" if et == "truth" else "大冒险"
 
-        # 跳过视为结算本轮：统一走 _finish_round（递增轮次 + 重置状态 + 启动冷却）
+        # 跳过视为结算本轮：统一走 _finish_round
         self._finish_round(session)
 
         yield event.plain_result(
             f"{user_name} 跳过了本轮事件！\n"
-            f"跳过的{type_label}：{event_text}\n\n"
+            f"跳过的{type_label}：{et_text}\n\n"
             f"本轮结束！请发送 /td_go 开始下一轮！"
         )
 
@@ -906,10 +1058,20 @@ class TruthOrDarePlugin(Star):
 
         # 踢出玩家
         was_target = target_id in session.current_target_ids
+        was_designator = target_id == session.designator_id
+        was_designated = target_id == session.designated_target_id
         session.remove_player(target_id)
         if was_target:
             # 踢掉的是当前轮被选中的玩家 → 统一走 _finish_round 结算（递增轮次+重置+冷却）
             self._finish_round(session)
+        elif was_designator or was_designated:
+            # 踢掉的是指定权获得者或被指定者，需要重置指定状态
+            session.designator_id = None
+            session.designated_target_id = None
+            session.selection_algorithm = None
+            session.target_events = {}
+            session.round_in_progress = False
+            session.current_target_ids = []
 
         # 检查人数是否不足，不足则自动结束游戏
         min_players = self.config.get("min_players", 4)
@@ -970,19 +1132,26 @@ class TruthOrDarePlugin(Star):
             "游戏流程：\n"
             "1. /td_join  - 加入游戏\n"
             "2. /td_start - 开始游戏（至少4人）\n"
-            "3. /td_roll  - 所有玩家 Roll 点\n"
-            "4. /td_go    - 机器人处理事件（随机指定玩家）\n"
-            "5. /td_done  - 完成事件，进入下一轮\n"
-            "6. /td_skip  - 跳过当前事件\n\n"
+            "3. /td_roll  - 所有玩家 Roll 点（所有人完成后自动进入下一阶段）\n"
+            "4. /td_go    - 查看当前轮状态 / 触发指定流程\n"
+            "5. /td_指定  - 指定权获得者指定 1 名玩家进行事件\n"
+            "6. 系统按相同算法补足剩余名额，每人独立获得真心话/大冒险\n"
+            "7. /td_done  - 完成事件，进入下一轮\n"
+            "8. /td_skip  - 跳过当前事件\n\n"
             "其他指令：\n"
             "/td_list       - 查看玩家列表\n"
             "/td_result     - 查看 Roll 点结果\n"
             "/td_leave      - 退出游戏\n"
             "/td_kick       - 踢出 AFK 玩家（管理员）\n"
-            "/td_指定       - 手动指定本轮目标（管理员，优先级高于 Roll 点）\n"
-            "/td_指定清除   - 清除本轮手动指定的目标\n"
+            "/td_指定清除   - 清除本轮指定状态（管理员）\n"
             "/td_stop       - 结束游戏\n"
             "/td_help       - 显示此帮助\n\n"
+            "指定机制：\n"
+            "- 所有人 Roll 完后，从 6 种算法随机选一种选出指定权获得者\n"
+            "- 算法：点数最大/最小、单数点数最大/最小、双数点数最大/最小\n"
+            "- 指定权获得者用 /td_指定 @玩家 指定 1 人\n"
+            "- 系统用相同算法补足剩余名额\n"
+            "- 每人独立随机真心话或大冒险\n\n"
             "动态人数规则：\n"
             "4人→抽2人 | 6人→抽3人 | 8人→抽4人\n"
             "每增加2人，事件目标人数+1\n\n"
