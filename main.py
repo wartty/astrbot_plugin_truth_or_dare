@@ -362,6 +362,11 @@ class TruthOrDarePlugin(Star):
         result += f"\n请上述玩家完成事件后，发送 /td_done 确认完成！\n"
         result += f"发送 /td_skip 可以跳过本轮（需要被选中的玩家本人确认）"
 
+        algorithm_names = [
+            "点数最大", "点数最小", "单数点数最大",
+            "单数点数最小", "双数点数最大", "双数点数最小"
+        ]
+        algo_name = algorithm_names[session.selection_algorithm] if session.selection_algorithm is not None else "未知"
         logger.info(
             f"[真心话大冒险] 群 {group_id} 第 {session.current_round + 1} 轮："
             f"算法={algo_name}，指定={designated_player.user_name}，"
