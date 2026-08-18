@@ -712,16 +712,6 @@ class TruthOrDarePlugin(Star):
             # 自动触发：选出指定权获得者并发送提示（含 @）
             async for _ in self._select_and_notify_designator(session, event, all_players):
                 pass
-            designator = self._select_by_algorithm(all_players, algorithm)
-            if designator is None:
-                yield event.plain_result("无法选出指定权获得者，请确保所有玩家都已 Roll 点！")
-                return
-            session.selection_algorithm = algorithm
-            session.designator_id = designator.user_id
-            logger.info(
-                f"[真心话大冒险] 群 {group_id} 第 {session.current_round + 1} 轮："
-                f"算法={algorithm_names[algorithm]}，指定权获得者={designator.user_name}"
-            )
 
     @filter.command("td_result", alias={"td结果", "tdresult"})
     async def cmd_roll_result(self, event: AstrMessageEvent):
