@@ -381,16 +381,27 @@ class TruthOrDarePlugin(Star):
     async def _select_and_notify_designator(self, session: GameSession, event: AstrMessageEvent, all_players: list):
         """选出指定权获得者并发送提示消息（含 @ 指定权获得者）"""
         group_id = session.group_id
-        
-        # 随机选择算法 (0-5)
-        algorithm = random.randint(0, 5)
         algorithm_names = [
             "点数最大", "点数最小", "单数点数最大",
             "单数点数最小", "双数点数最大", "双数点数最小"
         ]
 
-        # 用选中的算法选出指定权获得者
-        designator = self._select_by_algorithm(all_players, algorithm)
+        # 如果已有指定权获得者，直接复用，不重新选择
+        if session.designator_id:
+            designator = session.players.get(session.designator_id)
+            if designator is None:
+                # 指定权获得者已不在游戏中，清空并重新选择
+                session.designator_id = None
+                session.selection_algorithm = None
+                designator = None
+            else:
+                algorithm = session.selection_algorithm if session.selection_algorithm is not None else random.randint(0, 5)
+        else:
+            # 随机选择算法 (0-5)
+            algorithm = random.randint(0, 5)
+            # 用选中的算法选出指定权获得者
+            designator = self._select_by_algorithm(all_players, algorithm)
+
         if designator is None:
             yield event.plain_result("无法选出指定权获得者，请确保所有玩家都已 Roll 点！")
             return
@@ -710,8 +721,8 @@ class TruthOrDarePlugin(Star):
         all_players = list(session.players.values())
         if all(p.last_roll is not None for p in all_players):
             # 自动触发：选出指定权获得者并发送提示（含 @）
-            async for _ in self._select_and_notify_designator(session, event, all_players):
-                pass
+            async for result in self._select_and_notify_designator(session, event, all_players):
+                yield result
 
     @filter.command("td_result", alias={"td结果", "tdresult"})
     async def cmd_roll_result(self, event: AstrMessageEvent):
@@ -801,8 +812,8 @@ class TruthOrDarePlugin(Star):
         actual_count = min(target_count, len(all_players))
 
         # 统一使用 helper 发送提示（含 @ 指定权获得者）
-        async for _ in self._select_and_notify_designator(session, event, all_players):
-            pass
+        async for result in self._select_and_notify_designator(session, event, all_players):
+            yield result
 
     @filter.command("td_指定", alias={"td指定", "tddesignate"})
     async def cmd_designate(self, event: AstrMessageEvent):
@@ -881,8 +892,8 @@ class TruthOrDarePlugin(Star):
         )
 
         # 自动处理：补足剩余名额并分配事件
-        async for _ in self._process_designation(session, event):
-            pass
+        async for result in self._process_designation(session, event):
+            yield result
 
     @filter.command("td_指定清除", alias={"td指定清除", "tddesignate_clear"})
     async def cmd_designate_clear(self, event: AstrMessageEvent):
