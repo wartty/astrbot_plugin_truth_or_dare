@@ -50,6 +50,7 @@ class GameSession:
         # 新指定机制相关
         self.designator_id: Optional[str] = None          # 获得指定权的玩家 user_id（由6种算法随机选出）
         self.designated_target_id: Optional[str] = None   # 被指定的目标玩家 user_id
+        self.designated_event_type: Optional[str] = None  # 被指定玩家的事件类型 (truth/dare/None=随机)
         self.selection_algorithm: Optional[int] = None    # 本轮使用的选择算法索引 0-5
         # 每个目标玩家独立的事件：user_id -> (event_type, event_text)
         self.target_events: Dict[str, tuple] = {}
@@ -98,6 +99,7 @@ class GameSession:
         # 清除新指定机制相关字段
         self.designator_id = None
         self.designated_target_id = None
+        self.designated_event_type = None
         self.selection_algorithm = None
         self.target_events = {}
         # 清除本轮已完成确认记录
@@ -109,6 +111,7 @@ class GameSession:
 
 # ─── 插件主类 ───────────────────────────────────────────────
 
+@filter.command_group("td")
 class TruthOrDarePlugin(Star):
     """真心话大冒险插件"""
 
@@ -311,8 +314,20 @@ class TruthOrDarePlugin(Star):
         # 已经有 1 个被指定的目标
         designated_player = session.players[session.designated_target_id]
 
-        # 为被指定的玩家随机分配事件
-        event_type, event_text = self._pick_event()
+        # 为被指定的玩家分配事件（如果指定了类型则用指定类型，否则随机）
+        if session.designated_event_type == "truth":
+            # 强制真心话：从真心话题库随机
+            questions = self._parse_truth_questions()
+            event_text = random.choice(questions) if questions else "请说出一件关于你的真心话！"
+            event_type = "truth"
+        elif session.designated_event_type == "dare":
+            # 强制大冒险：从大冒险题库随机
+            tasks = self._parse_dare_tasks()
+            event_text = random.choice(tasks) if tasks else "请表演一个才艺！"
+            event_type = "dare"
+        else:
+            # 未指定：随机
+            event_type, event_text = self._pick_event()
         session.target_events[session.designated_target_id] = (event_type, event_text)
 
         # 如果还需要更多目标，用相同算法补足
@@ -371,8 +386,8 @@ class TruthOrDarePlugin(Star):
             type_name = "真心话" if et == "truth" else "大冒险"
             result += f"@{p.user_name}：{type_name} - {et_text}\n"
 
-        result += f"\n请上述玩家完成事件后，发送 /td_done 确认完成！\n"
-        result += f"发送 /td_skip 可以跳过本轮（需要被选中的玩家本人确认）"
+        result += f"\n请上述玩家完成事件后，发送 /td done 确认完成！\n"
+        result += f"发送 /td skip 可以跳过本轮（需要被选中的玩家本人确认）"
 
         algorithm_names = [
             "点数最大", "点数最小", "单数点数最大",
@@ -442,7 +457,7 @@ class TruthOrDarePlugin(Star):
             f"第 {session.current_round + 1} 轮\n\n"
             f"Roll 点结果：\n{roll_result_text}\n\n"
             f"本轮目标人数：{actual_count} 人\n"
-            f"已随机选出指定权获得者，请 @{designator.user_name} 使用 /td_指定 @玩家 指定 1 名玩家进行事件！"
+            f"已随机选出指定权获得者，请 @{designator.user_name} 使用 /td 指定 @玩家 指定 1 名玩家进行事件！"
         )
         
         yield event.chain_result(at_chain + [Plain(msg)])
@@ -524,6 +539,7 @@ class TruthOrDarePlugin(Star):
                     # 新指定机制字段
                     "designator_id": session.designator_id,
                     "designated_target_id": session.designated_target_id,
+                    "designated_event_type": session.designated_event_type,
                     "selection_algorithm": session.selection_algorithm,
                     "current_target_ids": session.current_target_ids,
                     "round_in_progress": session.round_in_progress,
@@ -553,6 +569,7 @@ class TruthOrDarePlugin(Star):
                 # 恢复新指定机制字段
                 session.designator_id = sdata.get("designator_id")
                 session.designated_target_id = sdata.get("designated_target_id")
+                session.designated_event_type = sdata.get("designated_event_type")
                 session.selection_algorithm = sdata.get("selection_algorithm")
                 session.current_target_ids = sdata.get("current_target_ids", [])
                 session.round_in_progress = sdata.get("round_in_progress", False)
@@ -577,7 +594,7 @@ class TruthOrDarePlugin(Star):
 
     # ── 指令处理 ──────────────────────────────────────────
 
-    @filter.command("td_join", alias={"td加入", "tdjoin"})
+    @filter.command("join", alias={"加入", "td_join", "tdjoin", "td加入"})
     async def cmd_join(self, event: AstrMessageEvent):
         """加入真心话大冒险游戏"""
         group_id = self._get_group_id(event)
@@ -607,7 +624,7 @@ class TruthOrDarePlugin(Star):
         else:
             yield event.plain_result(f"{user_name} 已经在游戏中啦！")
 
-    @filter.command("td_leave", alias={"td退出", "tdleave"})
+    @filter.command("leave", alias={"退出", "td_leave", "tdleave", "td退出"})
     async def cmd_quit(self, event: AstrMessageEvent):
         """退出真心话大冒险游戏"""
         group_id = self._get_group_id(event)
@@ -633,7 +650,7 @@ class TruthOrDarePlugin(Star):
             f"当前玩家数：{session.get_player_count()}"
         )
 
-    @filter.command("td_list", alias={"td列表", "tdlist"})
+    @filter.command("list", alias={"列表", "td_list", "tdlist", "td列表"})
     async def cmd_player_list(self, event: AstrMessageEvent):
         """查看当前玩家列表"""
         group_id = self._get_group_id(event)
@@ -651,7 +668,7 @@ class TruthOrDarePlugin(Star):
             f"{player_text}"
         )
 
-    @filter.command("td_start", alias={"td开始", "tdstart"})
+    @filter.command("start", alias={"开始", "td_start", "tdstart", "td开始"})
     async def cmd_start(self, event: AstrMessageEvent):
         """开始真心话大冒险游戏"""
         group_id = self._get_group_id(event)
@@ -683,13 +700,13 @@ class TruthOrDarePlugin(Star):
             f"真心话大冒险 正式开始！\n\n"
             f"参与玩家（{session.get_player_count()}人）：\n"
             f"{player_text}\n\n"
-            f"请所有玩家发送 /td_roll 来 Roll 点！\n"
+            f"请所有玩家发送 /td roll 来 Roll 点！\n"
             f"本轮目标人数：{target_count} 人\n"
             f"所有人都 Roll 完了后，将随机选出指定权获得者，由其指定 1 名玩家，\n"
             f"系统按相同算法补足剩余名额，每人独立获得真心话/大冒险事件！"
         )
 
-    @filter.command("td_roll", alias={"tdr", "tdroll"})
+    @filter.command("roll", alias={"td_roll", "tdroll", "tdr"})
     async def cmd_roll(self, event: AstrMessageEvent):
         """玩家 Roll 点（仅群聊）"""
         group_id = self._get_group_id(event)
@@ -702,17 +719,17 @@ class TruthOrDarePlugin(Star):
         user_name = event.get_sender_name()
 
         if not session.is_started:
-            yield event.plain_result("游戏还没开始，请先发送 /td_start 开始游戏！")
+            yield event.plain_result("游戏还没开始，请先发送 /td start 开始游戏！")
             return
 
         if session.round_in_progress:
             yield event.plain_result(
-                "当前轮次正在进行中，请完成或跳过本轮（/td_done 或 /td_skip）后再开始下一轮！"
+                "当前轮次正在进行中，请完成或跳过本轮（/td done 或 /td skip）后再开始下一轮！"
             )
             return
 
         if user_id not in session.players:
-            yield event.plain_result("你不在游戏中，请先发送 /td_join 加入！")
+            yield event.plain_result("你不在游戏中，请先发送 /td join 加入！")
             return
 
         # 执行 Roll 点
@@ -738,7 +755,7 @@ class TruthOrDarePlugin(Star):
             async for result in self._select_and_notify_designator(session, event, all_players):
                 yield result
 
-    @filter.command("td_result", alias={"td结果", "tdresult"})
+    @filter.command("result", alias={"结果", "td_result", "tdresult", "td结果"})
     async def cmd_roll_result(self, event: AstrMessageEvent):
         """查看所有玩家的 Roll 结果"""
         group_id = self._get_group_id(event)
@@ -765,10 +782,10 @@ class TruthOrDarePlugin(Star):
         yield event.plain_result(
             f"Roll 点结果（{rolled_count}/{total} 已Roll）\n\n"
             + "\n".join(lines)
-            + f"\n\n发送 /td_go 让机器人处理事件！"
+            + f"\n\n发送 /td go 让机器人处理事件！"
         )
 
-    @filter.command("td_go", alias={"tdgo", "td下一轮"})
+    @filter.command("go", alias={"下一轮", "td_go", "tdgo", "td下一轮"})
     async def cmd_go(self, event: AstrMessageEvent):
         """
         处理真心话大冒险事件 - 新指定机制。
@@ -776,7 +793,7 @@ class TruthOrDarePlugin(Star):
         流程：
         1. 检查所有玩家都已 Roll 点
         2. 从 6 种算法随机选一种，选出 "指定权获得者"
-        3. 等待指定权获得者使用 /td_指定 指定 1 名玩家
+        3. 等待指定权获得者使用 /td 指定 指定 1 名玩家
         4. 指定完成后，用同一算法补足剩余名额
         5. 为每个目标玩家独立随机真心话/大冒险
         """
@@ -788,10 +805,10 @@ class TruthOrDarePlugin(Star):
         session = self._get_session(group_id)
 
         if not session.is_started:
-            yield event.plain_result("游戏还没开始，请先发送 /td_start 开始游戏！")
+            yield event.plain_result("游戏还没开始，请先发送 /td start 开始游戏！")
             return
 
-        # 本轮已在进行：必须先由被选中玩家结算（/td_done 或 /td_skip），才能开新一轮
+        # 本轮已在进行：必须先由被选中玩家结算（/td done 或 /td skip），才能开新一轮
         if session.round_in_progress:
             in_progress_names = "、".join(
                 session.players[uid].user_name
@@ -799,8 +816,8 @@ class TruthOrDarePlugin(Star):
                 if uid in session.players
             )
             yield event.plain_result(
-                f"本轮正在进行中！请 {in_progress_names} 完成事件后发送 /td_done 确认，"
-                f"或由被选中的玩家发送 /td_skip 跳过！"
+                f"本轮正在进行中！请 {in_progress_names} 完成事件后发送 /td done 确认，"
+                f"或由被选中的玩家发送 /td skip 跳过！"
             )
             return
 
@@ -817,7 +834,7 @@ class TruthOrDarePlugin(Star):
             names = "、".join(p.user_name for p in unrolled)
             yield event.plain_result(
                 f"以下玩家还没 Roll 点：\n{names}\n\n"
-                f"请发送 /td_roll 完成 Roll 点后再继续！"
+                f"请发送 /td roll 完成 Roll 点后再继续！"
             )
             return
 
@@ -829,7 +846,7 @@ class TruthOrDarePlugin(Star):
         async for result in self._select_and_notify_designator(session, event, all_players):
             yield result
 
-    @filter.command("td_指定", alias={"td指定", "tddesignate"})
+    @filter.command("指定", alias={"td_指定", "td指定", "tddesignate"})
     async def cmd_designate(self, event: AstrMessageEvent):
         """
         指定权获得者指定 1 名玩家进行事件。
@@ -843,7 +860,7 @@ class TruthOrDarePlugin(Star):
         session = self._get_session(group_id)
 
         if not session.is_started:
-            yield event.plain_result("游戏还没开始，请先发送 /td_start 开始游戏！")
+            yield event.plain_result("游戏还没开始，请先发送 /td start 开始游戏！")
             return
 
         # 检查是否有指定权获得者且还未指定目标
@@ -861,6 +878,7 @@ class TruthOrDarePlugin(Star):
         # 解析指定目标：仅支持 @ 提及 1 个玩家
         target_id = None
         target_name = None
+        event_type_arg = None  # 可选：真心话/大冒险
 
         # 从 At 组件提取
         at_targets = [comp for comp in event.message_obj.message if isinstance(comp, At)]
@@ -883,12 +901,31 @@ class TruthOrDarePlugin(Star):
                         target_id = uid
                         target_name = p.user_name
                         break
+            if len(parts) >= 3:
+                event_type_arg = parts[2].strip()
+
+        # 解析可选事件类型
+        if event_type_arg:
+            if event_type_arg in ("真心话", "truth", "真话"):
+                event_type_arg = "truth"
+            elif event_type_arg in ("大冒险", "dare", "冒险"):
+                event_type_arg = "dare"
+            else:
+                yield event.plain_result(
+                    "无效的事件类型，请使用：\n"
+                    "/td 指定 @玩家 真心话\n"
+                    "/td 指定 @玩家 大冒险\n"
+                    "或不指定类型（随机）"
+                )
+                return
 
         if not target_id:
             yield event.plain_result(
                 "请指定要指定的玩家（仅限 1 人）：\n"
-                "/td_指定 @玩家\n"
-                "/td_指定 玩家名"
+                "/td 指定 @玩家\n"
+                "/td 指定 玩家名\n"
+                "/td 指定 @玩家 真心话\n"
+                "/td 指定 @玩家 大冒险"
             )
             return
 
@@ -900,8 +937,17 @@ class TruthOrDarePlugin(Star):
         # 保存被指定的目标
         session.designated_target_id = target_id
 
+        # 如果指定了事件类型，保存到 session
+        session.designated_event_type = event_type_arg
+
+        type_note = ""
+        if event_type_arg == "truth":
+            type_note = "（真心话）"
+        elif event_type_arg == "dare":
+            type_note = "（大冒险）"
+
         yield event.plain_result(
-            f"{user_name} 指定了 {target_name} 进行本轮事件！\n"
+            f"{user_name} 指定了 {target_name} 进行本轮事件{type_note}！\n"
             f"系统正在按相同算法补足剩余名额..."
         )
 
@@ -909,7 +955,7 @@ class TruthOrDarePlugin(Star):
         async for result in self._process_designation(session, event):
             yield result
 
-    @filter.command("td_指定清除", alias={"td指定清除", "tddesignate_clear"})
+    @filter.command("指定清除", alias={"td_指定清除", "td指定清除", "tddesignate_clear"})
     async def cmd_designate_clear(self, event: AstrMessageEvent):
         """清除本轮手动指定的目标"""
         group_id = self._get_group_id(event)
@@ -935,9 +981,9 @@ class TruthOrDarePlugin(Star):
             return
 
         session.designated_ids = []
-        yield event.plain_result("已清除本轮手动指定的目标，下次 /td_go 将按 Roll 点选择。")
+        yield event.plain_result("已清除本轮手动指定的目标，下次 /td go 将按 Roll 点选择。")
 
-    @filter.command("td_done", alias={"td完成", "tddone"})
+    @filter.command("done", alias={"完成", "td_done", "tddone", "td完成"})
     async def cmd_done(self, event: AstrMessageEvent):
         """完成当前事件，进入下一轮"""
         group_id = self._get_group_id(event)
@@ -952,7 +998,7 @@ class TruthOrDarePlugin(Star):
             return
 
         if not session.round_in_progress:
-            yield event.plain_result("当前没有进行中的事件，请先发送 /td_go 开始新一轮！")
+            yield event.plain_result("当前没有进行中的事件，请先发送 /td go 开始新一轮！")
             return
 
         user_id = event.get_sender_id()
@@ -988,7 +1034,7 @@ class TruthOrDarePlugin(Star):
                 f"{user_name} 完成了{type_label}事件！\n\n"
                 f"本轮共有 {len(session.current_target_ids)} 名被选中的玩家，"
                 f"还有 {len(remaining_ids)} 人未完成：\n{remaining_names}\n\n"
-                f"请他们完成后发送 /td_done 确认。"
+                f"请他们完成后发送 /td done 确认。"
             )
             return
 
@@ -998,10 +1044,10 @@ class TruthOrDarePlugin(Star):
         yield event.plain_result(
             f"{user_name} 完成了事件！\n\n"
             f"所有被选中的玩家均已完成，本轮结束！\n"
-            f"请发送 /td_go 开始下一轮！"
+            f"请发送 /td go 开始下一轮！"
         )
 
-    @filter.command("td_skip", alias={"td跳过", "tdskip"})
+    @filter.command("skip", alias={"跳过", "td_skip", "tdskip", "td跳过"})
     async def cmd_skip(self, event: AstrMessageEvent):
         """跳过当前事件（需要被选中的玩家确认）"""
         group_id = self._get_group_id(event)
@@ -1036,10 +1082,10 @@ class TruthOrDarePlugin(Star):
         yield event.plain_result(
             f"{user_name} 跳过了本轮事件！\n"
             f"跳过的{type_label}：{et_text}\n\n"
-            f"本轮结束！请发送 /td_go 开始下一轮！"
+            f"本轮结束！请发送 /td go 开始下一轮！"
         )
 
-    @filter.command("td_kick", alias={"td踢人", "tdkick"})
+    @filter.command("kick", alias={"踢人", "td_kick", "tdkick", "td踢人"})
     async def cmd_kick(self, event: AstrMessageEvent):
         """管理员踢出玩家（解决玩家 AFK 导致游戏卡死的问题）"""
         group_id = self._get_group_id(event)
@@ -1060,7 +1106,7 @@ class TruthOrDarePlugin(Star):
 
         # 从消息中提取被踢玩家
         message = event.get_message_str()
-        # 格式: /td_kick @某人 或 /td_kick 玩家名
+        # 格式: /td kick @某人 或 /td kick 玩家名
         # 尝试从 At 消息中提取
         at_targets = [comp for comp in event.message_obj.message if isinstance(comp, At)]
         if at_targets:
@@ -1073,7 +1119,7 @@ class TruthOrDarePlugin(Star):
             # 尝试从纯文本中提取玩家名
             parts = message.strip().split(None, 1)
             if len(parts) < 2:
-                yield event.plain_result("请指定要踢出的玩家：/td_kick @玩家 或 /td_kick 玩家名")
+                yield event.plain_result("请指定要踢出的玩家：/td kick @玩家 或 /td kick 玩家名")
                 return
             target_name = parts[1].strip()
             # 按名字查找
@@ -1126,7 +1172,7 @@ class TruthOrDarePlugin(Star):
         elif was_target:
             yield event.plain_result(
                 f"{target_name} 被踢出游戏！\n"
-                f"当前轮次已结算，请发送 /td_go 开始新一轮。\n"
+                f"当前轮次已结算，请发送 /td go 开始新一轮。\n"
                 f"当前玩家数：{session.get_player_count()}"
             )
         else:
@@ -1135,7 +1181,7 @@ class TruthOrDarePlugin(Star):
                 f"当前玩家数：{session.get_player_count()}"
             )
 
-    @filter.command("td_stop", alias={"td结束", "tdstop"})
+    @filter.command("stop", alias={"结束", "td_stop", "tdstop", "td结束"})
     async def cmd_stop(self, event: AstrMessageEvent):
         """结束游戏"""
         group_id = self._get_group_id(event)
@@ -1161,38 +1207,39 @@ class TruthOrDarePlugin(Star):
             f"感谢大家的参与！"
         )
 
-    @filter.command("td_help", alias={"td帮助", "tdhelp"})
+    @filter.command("help", alias={"帮助", "td_help", "tdhelp", "td帮助"})
     async def cmd_help(self, event: AstrMessageEvent):
         """查看帮助信息"""
         yield event.plain_result(
             "真心话大冒险 - 游戏帮助\n\n"
             "游戏流程：\n"
-            "1. /td_join  - 加入游戏\n"
-            "2. /td_start - 开始游戏（至少4人）\n"
-            "3. /td_roll  - 所有玩家 Roll 点（所有人完成后自动进入下一阶段）\n"
-            "4. /td_go    - 查看当前轮状态 / 触发指定流程\n"
-            "5. /td_指定  - 指定权获得者指定 1 名玩家进行事件\n"
+            "1. /td join  - 加入游戏\n"
+            "2. /td start - 开始游戏（至少4人）\n"
+            "3. /td roll  - 所有玩家 Roll 点（所有人完成后自动进入下一阶段）\n"
+            "4. /td go    - 查看当前轮状态 / 触发指定流程\n"
+            "5. /td 指定  - 指定权获得者指定 1 名玩家进行事件\n"
             "6. 系统按相同算法补足剩余名额，每人独立获得真心话/大冒险\n"
-            "7. /td_done  - 完成事件，进入下一轮\n"
-            "8. /td_skip  - 跳过当前事件\n\n"
+            "7. /td done  - 完成事件，进入下一轮\n"
+            "8. /td skip  - 跳过当前事件\n\n"
             "其他指令：\n"
-            "/td_list       - 查看玩家列表\n"
-            "/td_result     - 查看 Roll 点结果\n"
-            "/td_leave      - 退出游戏\n"
-            "/td_kick       - 踢出 AFK 玩家（管理员）\n"
-            "/td_指定清除   - 清除本轮指定状态（管理员）\n"
-            "/td_stop       - 结束游戏\n"
-            "/td_help       - 显示此帮助\n\n"
+            "/td list       - 查看玩家列表\n"
+            "/td result     - 查看 Roll 点结果\n"
+            "/td leave      - 退出游戏\n"
+            "/td kick       - 踢出 AFK 玩家（管理员）\n"
+            "/td 指定清除   - 清除本轮指定状态（管理员）\n"
+            "/td stop       - 结束游戏\n"
+            "/td help       - 显示此帮助\n\n"
             "指定机制：\n"
             "- 所有人都 Roll 完了后，从 6 种算法随机选一种选出指定权获得者\n"
             "- 算法：点数最大/最小、单数点数最大/最小、双数点数最大/最小\n"
-            "- 指定权获得者用 /td_指定 @玩家 指定 1 人\n"
+            "- 指定权获得者用 /td 指定 @玩家 指定 1 人\n"
+            "- 可选指定事件类型：/td 指定 @玩家 真心话 / /td 指定 @玩家 大冒险\n"
             "- 系统用相同算法补足剩余名额\n"
-            "- 每人独立随机真心话或大冒险\n\n"
+            "- 每人独立随机真心话或大冒险（未指定时）\n\n"
             "动态人数规则：\n"
             "4人→抽2人 | 6人→抽3人 | 8人→抽4人\n"
             "每增加2人，事件目标人数+1\n\n"
-            "所有指令均以 td_ 开头，避免与其他插件冲突"
+            "所有指令均以 td 开头，避免与其他插件冲突"
         )
 
     # ── 生命周期 ──────────────────────────────────────────
