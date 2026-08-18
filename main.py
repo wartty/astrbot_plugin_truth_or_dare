@@ -717,10 +717,12 @@ class TruthOrDarePlugin(Star):
             f"{user_name} Roll 出了 {roll_result} 点！"
         )
 
-                # 检查是否所有人都 Roll 完了，如果是则自动触发下一阶段
+        # 检查是否所有人都 Roll 完了，如果是则自动触发下一阶段
         all_players = list(session.players.values())
         if all(p.last_roll is not None for p in all_players):
-            # 自动触发：选出指定权获得者并发送提示（含 @）
+            # 先发送提示（不 @ 任何人）
+            yield event.plain_result("所有人已完成 Roll 点，正在随机选出指定权获得者...")
+            # 然后选出指定权获得者并发送完整提示（含 @）
             async for result in self._select_and_notify_designator(session, event, all_players):
                 yield result
 
