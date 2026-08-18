@@ -661,11 +661,32 @@ class TruthOrDarePlugin(Star):
         # 检查是否所有人都已 Roll 完，如果是则自动触发下一阶段
         all_players = list(session.players.values())
         if all(p.last_roll is not None for p in all_players):
-            # 所有人都 Roll 完了，自动触发选择逻辑
-            yield event.plain_result("所有人已完成 Roll 点，正在随机选出指定权获得者...")
-            # 直接调用选择逻辑（复用 cmd_go 的核心逻辑）
-            # 这里需要模拟触发后续流程
-            pass  # 后续流程由用户输入 /td_go 继续，或可在此自动调用内部方法
+            # 所有人都 Roll 完了，自动触发选择逻辑（复用 cmd_go 核心逻辑）
+            # 显示 Roll 结果（无 @ 提及）
+            roll_result_msg = (
+                f"第 {session.current_round + 1} 轮\n\n"
+                f"Roll 点结果：\n" +
+                "\n".join(f"  {p.user_name}：{p.last_roll}" for p in sorted(all_players, key=lambda x: x.last_roll if x.last_roll is not None else float("inf"))) +
+                f"\n\n本轮目标人数：{min(self._calc_target_count(len(all_players)), len(all_players))} 人\n"
+                f"已随机选出指定权获得者，请该玩家使用 /td_指定 @玩家 指定 1 名玩家进行事件！"
+            )
+            yield event.plain_result(roll_result_msg)
+            # 直接调用选择逻辑
+            algorithm = random.randint(0, 5)
+            algorithm_names = [
+                "点数最大", "点数最小", "单数点数最大",
+                "单数点数最小", "双数点数最大", "双数点数最小"
+            ]
+            designator = self._select_by_algorithm(all_players, algorithm)
+            if designator is None:
+                yield event.plain_result("无法选出指定权获得者，请确保所有玩家都已 Roll 点！")
+                return
+            session.selection_algorithm = algorithm
+            session.designator_id = designator.user_id
+            logger.info(
+                f"[真心话大冒险] 群 {group_id} 第 {session.current_round + 1} 轮："
+                f"算法={algorithm_names[algorithm]}，指定权获得者={designator.user_name}"
+            )
 
     @filter.command("td_result", alias={"td结果", "tdresult"})
     async def cmd_roll_result(self, event: AstrMessageEvent):
