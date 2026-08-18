@@ -377,6 +377,54 @@ class TruthOrDarePlugin(Star):
         yield event.chain_result(at_chain + [Plain(result)])
 
 
+
+    async def _select_and_notify_designator(self, session: GameSession, event: AstrMessageEvent, all_players: list):
+        """选出指定权获得者并发送提示消息（含 @ 指定权获得者）"""
+        group_id = session.group_id
+        
+        # 随机选择算法 (0-5)
+        algorithm = random.randint(0, 5)
+        algorithm_names = [
+            "点数最大", "点数最小", "单数点数最大",
+            "单数点数最小", "双数点数最大", "双数点数最小"
+        ]
+
+        # 用选中的算法选出指定权获得者
+        designator = self._select_by_algorithm(all_players, algorithm)
+        if designator is None:
+            yield event.plain_result("无法选出指定权获得者，请确保所有玩家都已 Roll 点！")
+            return
+
+        # 保存算法和指定权获得者
+        session.selection_algorithm = algorithm
+        session.designator_id = designator.user_id
+
+        logger.info(
+            f"[真心话大冒险] 群 {group_id} 第 {session.current_round + 1} 轮："
+            f"算法={algorithm_names[algorithm]}，指定权获得者={designator.user_name}"
+        )
+
+        # 发送提示消息：含 @ 指定权获得者
+        target_count = self._calc_target_count(len(all_players))
+        actual_count = min(target_count, len(all_players))
+        
+        roll_result_text = "\n".join(
+            f"  {p.user_name}：{p.last_roll}" 
+            for p in sorted(all_players, key=lambda x: x.last_roll if x.last_roll is not None else float("inf"))
+        )
+        
+        # 使用 chain_result 发送 @ 提及
+        at_chain = [At(qq=self._to_at_id(designator.user_id))]
+        msg = (
+            f"第 {session.current_round + 1} 轮\n\n"
+            f"Roll 点结果：\n{roll_result_text}\n\n"
+            f"本轮目标人数：{actual_count} 人\n"
+            f"已随机选出指定权获得者，请 @{designator.user_name} 使用 /td_指定 @玩家 指定 1 名玩家进行事件！"
+        )
+        
+        yield event.chain_result(at_chain + [Plain(msg)])
+        return
+
     def _is_admin(self, event: AstrMessageEvent) -> bool:
         """判断发送者是否为群主/管理员（兼容中英文角色字段；可回退到 config 中的 admin_ids）"""
         sender_role = (
@@ -614,7 +662,7 @@ class TruthOrDarePlugin(Star):
             f"{player_text}\n\n"
             f"请所有玩家发送 /td_roll 来 Roll 点！\n"
             f"本轮目标人数：{target_count} 人\n"
-            f"所有人 Roll 完后，将随机选出指定权获得者，由其指定 1 名玩家，\n"
+            f"所有人都 Roll 完了后，将随机选出指定权获得者，由其指定 1 名玩家，\n"
             f"系统按相同算法补足剩余名额，每人独立获得真心话/大冒险事件！"
         )
 
@@ -658,25 +706,12 @@ class TruthOrDarePlugin(Star):
             f"{user_name} Roll 出了 {roll_result} 点！"
         )
 
-        # 检查是否所有人都已 Roll 完，如果是则自动触发下一阶段
+                # 检查是否所有人都 Roll 完了，如果是则自动触发下一阶段
         all_players = list(session.players.values())
         if all(p.last_roll is not None for p in all_players):
-            # 所有人都 Roll 完了，自动触发选择逻辑（复用 cmd_go 核心逻辑）
-            # 显示 Roll 结果（无 @ 提及）
-            roll_result_msg = (
-                f"第 {session.current_round + 1} 轮\n\n"
-                f"Roll 点结果：\n" +
-                "\n".join(f"  {p.user_name}：{p.last_roll}" for p in sorted(all_players, key=lambda x: x.last_roll if x.last_roll is not None else float("inf"))) +
-                f"\n\n本轮目标人数：{min(self._calc_target_count(len(all_players)), len(all_players))} 人\n"
-                f"已随机选出指定权获得者，请该玩家使用 /td_指定 @玩家 指定 1 名玩家进行事件！"
-            )
-            yield event.plain_result(roll_result_msg)
-            # 直接调用选择逻辑
-            algorithm = random.randint(0, 5)
-            algorithm_names = [
-                "点数最大", "点数最小", "单数点数最大",
-                "单数点数最小", "双数点数最大", "双数点数最小"
-            ]
+            # 自动触发：选出指定权获得者并发送提示（含 @）
+            async for _ in self._select_and_notify_designator(session, event, all_players):
+                pass
             designator = self._select_by_algorithm(all_players, algorithm)
             if designator is None:
                 yield event.plain_result("无法选出指定权获得者，请确保所有玩家都已 Roll 点！")
@@ -775,49 +810,11 @@ class TruthOrDarePlugin(Star):
         target_count = self._calc_target_count(len(all_players))
         actual_count = min(target_count, len(all_players))
 
-        # 如果已经有指定权获得者（说明是指定完成后的二次调用），直接进入指定处理
-        if session.designator_id and not session.designated_target_id:
-            yield event.plain_result(
-                f"第 {session.current_round + 1} 轮\n\n"
-                f"Roll 点结果：\n" +
-                "\n".join(f"  {p.user_name}：{p.last_roll}" for p in sorted(all_players, key=lambda x: x.last_roll if x.last_roll is not None else float("inf"))) +
-                f"\n\n本轮目标人数：{actual_count} 人\n"
-                f"已随机选出指定权获得者，请该玩家使用 /td_指定 @玩家 指定 1 名玩家进行事件！"
-            )
-            return
+        # 统一使用 helper 发送提示（含 @ 指定权获得者）
+        async for _ in self._select_and_notify_designator(session, event, all_players):
+            pass
 
-        # 随机选择算法 (0-5)
-        algorithm = random.randint(0, 5)
-        algorithm_names = [
-            "点数最大", "点数最小", "单数点数最大",
-            "单数点数最小", "双数点数最大", "双数点数最小"
-        ]
-
-        # 用选中的算法选出指定权获得者
-        designator = self._select_by_algorithm(all_players, algorithm)
-        if designator is None:
-            yield event.plain_result("无法选出指定权获得者，请确保所有玩家都已 Roll 点！")
-            return
-
-        # 保存算法和指定权获得者
-        session.selection_algorithm = algorithm
-        session.designator_id = designator.user_id
-
-        logger.info(
-            f"[真心话大冒险] 群 {group_id} 第 {session.current_round + 1} 轮："
-            f"算法={algorithm_names[algorithm]}，指定权获得者={designator.user_name}"
-        )
-
-        # 不透露算法和指定权获得者，只提示等待指定
-        yield event.plain_result(
-            f"第 {session.current_round + 1} 轮\n\n"
-            f"Roll 点结果：\n" +
-            "\n".join(f"  {p.user_name}：{p.last_roll}" for p in sorted(all_players, key=lambda x: x.last_roll if x.last_roll is not None else float("inf"))) +
-            f"\n\n本轮目标人数：{actual_count} 人\n"
-            f"已随机选出指定权获得者，请该玩家使用 /td_指定 @玩家 指定 1 名玩家进行事件！"
-        )
-
-    @filter.command("td_指定", alias={"td指定", "tddesignate"})
+    @filter.command("td_指定", alias={"td指定", "tddesignate"})    @filter.command("td_指定", alias={"td指定", "tddesignate"})
     async def cmd_designate(self, event: AstrMessageEvent):
         """
         指定权获得者指定 1 名玩家进行事件。
@@ -1172,7 +1169,7 @@ class TruthOrDarePlugin(Star):
             "/td_stop       - 结束游戏\n"
             "/td_help       - 显示此帮助\n\n"
             "指定机制：\n"
-            "- 所有人 Roll 完后，从 6 种算法随机选一种选出指定权获得者\n"
+            "- 所有人都 Roll 完了后，从 6 种算法随机选一种选出指定权获得者\n"
             "- 算法：点数最大/最小、单数点数最大/最小、双数点数最大/最小\n"
             "- 指定权获得者用 /td_指定 @玩家 指定 1 人\n"
             "- 系统用相同算法补足剩余名额\n"
