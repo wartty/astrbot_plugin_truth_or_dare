@@ -1171,9 +1171,9 @@ class TruthOrDarePlugin(Star):
                 f"当前玩家数：{session.get_player_count()}"
             )
 
-    @filter.command("stop", alias={"结束"})
-    async def cmd_stop(self, event: AstrMessageEvent):
-        """结束游戏"""
+    @filter.command("end", alias={"结束"})
+    async def cmd_end(self, event: AstrMessageEvent):
+        """结束游戏（不与其他插件的 stop/help 指令冲突）"""
         group_id = self._get_group_id(event)
         if not group_id:
             yield event.plain_result("该指令只能在群聊中使用！")
@@ -1197,9 +1197,9 @@ class TruthOrDarePlugin(Star):
             f"感谢大家的参与！"
         )
 
-    @filter.command("help", alias={"帮助"})
-    async def cmd_help(self, event: AstrMessageEvent):
-        """查看帮助信息"""
+    @filter.command("menu", alias={"帮助"})
+    async def cmd_menu(self, event: AstrMessageEvent):
+        """查看帮助信息（不与其他插件的 help 指令冲突）"""
         yield event.plain_result(
             "真心话大冒险 - 游戏帮助\n\n"
             "游戏流程：\n"
@@ -1217,8 +1217,8 @@ class TruthOrDarePlugin(Star):
             "/td leave      - 退出游戏\n"
             "/td kick       - 踢出 AFK 玩家（管理员）\n"
             "/td 指定清除   - 清除本轮指定状态（管理员）\n"
-            "/td stop       - 结束游戏\n"
-            "/td help       - 显示此帮助\n\n"
+            "/td end        - 结束游戏\n"
+            "/td menu       - 显示此帮助\n\n"
             "指定机制：\n"
             "- 所有人都 Roll 完了后，从 6 种算法随机选一种选出指定权获得者\n"
             "- 算法：点数最大/最小、单数点数最大/最小、双数点数最大/最小\n"
