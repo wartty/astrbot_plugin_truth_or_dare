@@ -334,7 +334,6 @@ class TruthOrDarePlugin(Star):
             "点数最大", "点数最小", "单数点数最大",
             "单数点数最小", "双数点数最大", "双数点数最小"
         ]
-        algo_name = algorithm_names[session.selection_algorithm] if session.selection_algorithm is not None else "未知"
 
         target_names = "、".join(p.user_name for p in all_targets)
         at_chain = [At(qq=self._to_at_id(p.user_id)) for p in all_targets]
@@ -347,7 +346,7 @@ class TruthOrDarePlugin(Star):
             roll_text = str(p.last_roll) if p.last_roll is not None else "未Roll"
             result += f"  {p.user_name}：{roll_text}\n"
 
-        result += f"\n本轮算法：{algo_name}\n"
+        # 不透露算法，仅显示指定者
         result += f"指定权获得者指定：{designated_player.user_name}\n"
         if additional_targets:
             extra_names = "、".join(p.user_name for p in additional_targets)
