@@ -814,7 +814,7 @@ class TruthOrDarePlugin(Star):
         async for _ in self._select_and_notify_designator(session, event, all_players):
             pass
 
-    @filter.command("td_指定", alias={"td指定", "tddesignate"})    @filter.command("td_指定", alias={"td指定", "tddesignate"})
+    @filter.command("td_指定", alias={"td指定", "tddesignate"})
     async def cmd_designate(self, event: AstrMessageEvent):
         """
         指定权获得者指定 1 名玩家进行事件。
