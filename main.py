@@ -229,27 +229,39 @@ class TruthOrDarePlugin(Star):
         elif algorithm == 2:  # 单数点数最大
             odd_players = [p for p in valid_players if p.last_roll % 2 == 1]
             if not odd_players:
-                return None
-            max_roll = max(p.last_roll for p in odd_players)
-            candidates = [p for p in odd_players if p.last_roll == max_roll]
+                # 无单数玩家，回退为点数最大
+                max_roll = max(p.last_roll for p in valid_players)
+                candidates = [p for p in valid_players if p.last_roll == max_roll]
+            else:
+                max_roll = max(p.last_roll for p in odd_players)
+                candidates = [p for p in odd_players if p.last_roll == max_roll]
         elif algorithm == 3:  # 单数点数最小
             odd_players = [p for p in valid_players if p.last_roll % 2 == 1]
             if not odd_players:
-                return None
-            min_roll = min(p.last_roll for p in odd_players)
-            candidates = [p for p in odd_players if p.last_roll == min_roll]
+                # 无单数玩家，回退为点数最小
+                min_roll = min(p.last_roll for p in valid_players)
+                candidates = [p for p in valid_players if p.last_roll == min_roll]
+            else:
+                min_roll = min(p.last_roll for p in odd_players)
+                candidates = [p for p in odd_players if p.last_roll == min_roll]
         elif algorithm == 4:  # 双数点数最大
             even_players = [p for p in valid_players if p.last_roll % 2 == 0]
             if not even_players:
-                return None
-            max_roll = max(p.last_roll for p in even_players)
-            candidates = [p for p in even_players if p.last_roll == max_roll]
+                # 无双数玩家，回退为点数最大
+                max_roll = max(p.last_roll for p in valid_players)
+                candidates = [p for p in valid_players if p.last_roll == max_roll]
+            else:
+                max_roll = max(p.last_roll for p in even_players)
+                candidates = [p for p in even_players if p.last_roll == max_roll]
         elif algorithm == 5:  # 双数点数最小
             even_players = [p for p in valid_players if p.last_roll % 2 == 0]
             if not even_players:
-                return None
-            min_roll = min(p.last_roll for p in even_players)
-            candidates = [p for p in even_players if p.last_roll == min_roll]
+                # 无双数玩家，回退为点数最小
+                min_roll = min(p.last_roll for p in valid_players)
+                candidates = [p for p in valid_players if p.last_roll == min_roll]
+            else:
+                min_roll = min(p.last_roll for p in even_players)
+                candidates = [p for p in even_players if p.last_roll == min_roll]
         else:
             return None
 
