@@ -57,6 +57,6 @@
     "description": "管理员 QQ 号列表（兜底，群角色获取失败时生效）",
     "type": "list",
     "default": [],
-    "hint": "填写可执行 /td_指定、/td_kick 等管理员指令的 QQ 号，逗号分隔"
+    "hint": "填写可执行 /td 指定、/td kick 等管理员指令的 QQ 号，逗号分隔"
   }
 }
