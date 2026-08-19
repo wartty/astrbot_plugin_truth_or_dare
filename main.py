@@ -44,6 +44,7 @@ class GameSession:
         self.current_round_start_time: float = 0.0    # 当前轮开始时间戳（用于超时自动跳过）
         self.current_target_ids: List[str] = []           # 本轮被选中的玩家 user_id
         self.current_target_count: int = 0                # 本轮实际指定人数
+        self.round_participant_ids: List[str] = []         # 本轮参与者花名册（中途加入者从下一轮起纳入）
         # 新指定机制相关
         self.designator_id: Optional[str] = None          # 获得指定权的玩家 user_id（由6种算法随机选出）
         self.designated_target_id: Optional[str] = None   # 被指定的目标玩家 user_id
@@ -70,6 +71,8 @@ class GameSession:
         del self.players[user_id]
         if user_id in self.player_order:
             self.player_order.remove(user_id)
+        if user_id in self.round_participant_ids:
+            self.round_participant_ids.remove(user_id)
         return True
 
     def get_player_count(self) -> int:
@@ -104,6 +107,13 @@ class GameSession:
         # 清除所有玩家的 Roll 记录
         for p in self.players.values():
             p.last_roll = None
+        # 进入新一轮：刷新本轮参与者花名册为当前所有在场玩家
+        # （中途加入的玩家在上一轮 join 时已加入 players，此处自动纳入本轮）
+        self.round_participant_ids = list(self.player_order)
+
+    def get_round_players(self) -> List["Player"]:
+        """返回本轮参与者列表（中途加入者不在内，从下一轮起纳入）。"""
+        return [self.players[uid] for uid in self.round_participant_ids if uid in self.players]
 
 
 # ─── 插件主类 ───────────────────────────────────────────────
@@ -306,7 +316,7 @@ class TruthOrDarePlugin(Star):
     async def _process_designation(self, session: GameSession, event: AstrMessageEvent):
         """处理指定完成后的逻辑：补足剩余名额、分配事件、开始轮次"""
         group_id = session.group_id
-        all_players = list(session.players.values())
+        all_players = session.get_round_players()
 
         # 动态计算目标人数
         target_count = self._calc_target_count(len(all_players))
@@ -596,6 +606,7 @@ class TruthOrDarePlugin(Star):
                     "designated_event_text": session.designated_event_text,
                     "selection_algorithm": session.selection_algorithm,
                     "current_target_ids": session.current_target_ids,
+                    "round_participant_ids": session.round_participant_ids,
                     "round_in_progress": session.round_in_progress,
                 }
             with open(self._get_data_path(), "w", encoding="utf-8") as f:
@@ -627,6 +638,7 @@ class TruthOrDarePlugin(Star):
                 session.designated_event_text = sdata.get("designated_event_text")
                 session.selection_algorithm = sdata.get("selection_algorithm")
                 session.current_target_ids = sdata.get("current_target_ids", [])
+                session.round_participant_ids = sdata.get("round_participant_ids", list(session.player_order))
                 session.round_in_progress = sdata.get("round_in_progress", False)
                 # 重启后不恢复进行中的轮次状态，需要重新 Roll
                 session.current_target_count = 0
@@ -661,7 +673,16 @@ class TruthOrDarePlugin(Star):
         max_players = self.config.get("max_players", 50)
 
         if session.is_started:
-            yield event.plain_result("游戏已经开始，请等待下一局再加入！")
+            # 游戏已开始：允许中途加入，从下一轮开始参与（此时不设人数上限）
+            if session.add_player(user_id, user_name):
+                logger.info(f"[真心话大冒险] 玩家 {user_name}({user_id}) 中途加入群 {group_id} 的游戏")
+                yield event.plain_result(
+                    f"{user_name} 已加入游戏！\n"
+                    f"游戏正在进行中，你将从下一轮开始参与。\n"
+                    f"当前玩家数：{session.get_player_count()}"
+                )
+            else:
+                yield event.plain_result(f"{user_name} 已经在游戏中啦！")
             return
 
         if session.get_player_count() >= max_players:
@@ -745,6 +766,8 @@ class TruthOrDarePlugin(Star):
 
         session.is_started = True
         session.current_round = 0
+        # 首轮参与者花名册 = 当前所有在场玩家
+        session.round_participant_ids = list(session.player_order)
 
         player_text = session.get_player_list_text()
         # 计算当前人数对应的目标人数
@@ -785,6 +808,10 @@ class TruthOrDarePlugin(Star):
             yield event.plain_result("你不在游戏中，请先发送 /td join 加入！")
             return
 
+        if user_id not in session.round_participant_ids:
+            yield event.plain_result("你本轮中途加入，将从下一轮开始参与，耐心等待一下哦~")
+            return
+
         # 执行 Roll 点
         roll_min = self.config.get("roll_min", 1)
         roll_max = self.config.get("roll_max", 100)
@@ -800,7 +827,7 @@ class TruthOrDarePlugin(Star):
         )
 
         # 检查是否所有人都 Roll 完了，如果是则自动触发下一阶段
-        all_players = list(session.players.values())
+        all_players = session.get_round_players()
         if all(p.last_roll is not None for p in all_players):
             # 先发送提示（不 @ 任何人）
             yield event.plain_result("所有人已完成 Roll 点，正在随机选出指定权获得者...")
@@ -880,8 +907,8 @@ class TruthOrDarePlugin(Star):
             yield event.plain_result(f"冷却中，请等待 {remaining:.0f} 秒后再开始下一轮！")
             return
 
-        # 检查 Roll 状态：所有玩家都必须 Roll
-        all_players = list(session.players.values())
+        # 检查 Roll 状态：本轮所有参与者都必须 Roll
+        all_players = session.get_round_players()
         unrolled = [p for p in all_players if p.last_roll is None]
         if unrolled:
             names = "、".join(p.user_name for p in unrolled)
@@ -940,12 +967,14 @@ class TruthOrDarePlugin(Star):
         at_targets = [comp for comp in event.message_obj.message if isinstance(comp, At)]
         if at_targets:
             uid = str(at_targets[0].qq)
-            if uid in session.players:
-                target_id = uid
-                target_name = session.players[uid].user_name
-            else:
+            if uid not in session.players:
                 yield event.plain_result("该玩家不在游戏中！")
                 return
+            if uid not in session.round_participant_ids:
+                yield event.plain_result("该玩家本轮中途加入，将从下一轮开始参与，无法被指定！")
+                return
+            target_id = uid
+            target_name = session.players[uid].user_name
             # 从纯文本片段中提取 @ 之后的「类型 + 自定义内容」
             for comp in event.message_obj.message:
                 if isinstance(comp, Plain):
@@ -975,6 +1004,9 @@ class TruthOrDarePlugin(Star):
                 name = tokens[0] if tokens else ""
                 for uid, p in session.players.items():
                     if p.user_name == name:
+                        if uid not in session.round_participant_ids:
+                            yield event.plain_result("该玩家本轮中途加入，将从下一轮开始参与，无法被指定！")
+                            return
                         target_id = uid
                         target_name = p.user_name
                         break
