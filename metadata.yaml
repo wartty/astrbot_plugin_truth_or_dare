@@ -1,9 +1,9 @@
 name: astrbot_plugin_truth_or_dare
 display_name: 真心话大冒险
-short_desc: 🎲 群聊真心话大冒险插件 - 随机算法指定权、玩家指定、系统补足、独立事件分配
-desc: 一款群聊真心话大冒险派对游戏插件。玩家加入游戏后通过 Roll 点决定命运，所有人 Roll 完后从 6 种算法随机选一种选出指定权获得者，由其指定 1 名玩家，系统按相同算法补足剩余名额，每人独立随机获得真心话或大冒险事件，完成后再进入下一轮。
+short_desc: 🎲 群聊真心话大冒险插件 - 随机算法指定权、玩家指定、系统补足、独立事件分配、可自定义事件类型与内容
+desc: 一款群聊真心话大冒险派对游戏插件。玩家加入游戏后通过 Roll 点决定命运，所有人 Roll 完后从 6 种算法随机选一种选出指定权获得者，由其指定 1 名玩家，系统按相同算法补足剩余名额，每人独立随机获得真心话或大冒险事件，完成后再进入下一轮。指定时可用数字 1=真心话 / 2=大冒险 选择事件类型，并可附加自定义事件内容（省略时随机抽取）。
 author: DeepChat
-version: 2.0.0
+version: 2.1.0
 repo: https://github.com/wartty/astrbot_plugin_truth_or_dare
 astrbot_version: ">=4.0.0"
 support_platforms:

@@ -48,6 +48,7 @@ class GameSession:
         self.designator_id: Optional[str] = None          # 获得指定权的玩家 user_id（由6种算法随机选出）
         self.designated_target_id: Optional[str] = None   # 被指定的目标玩家 user_id
         self.designated_event_type: Optional[str] = None  # 被指定玩家的事件类型 (truth/dare/None=随机)
+        self.designated_event_text: Optional[str] = None  # 被指定玩家的事件自定义内容 (None=从题库随机)
         self.selection_algorithm: Optional[int] = None    # 本轮使用的选择算法索引 0-5
         # 每个目标玩家独立的事件：user_id -> (event_type, event_text)
         self.target_events: Dict[str, tuple] = {}
@@ -95,6 +96,7 @@ class GameSession:
         self.designator_id = None
         self.designated_target_id = None
         self.designated_event_type = None
+        self.designated_event_text = None
         self.selection_algorithm = None
         self.target_events = {}
         # 清除本轮已完成确认记录
@@ -313,17 +315,23 @@ class TruthOrDarePlugin(Star):
         # 已经有 1 个被指定的目标
         designated_player = session.players[session.designated_target_id]
 
-        # 为被指定的玩家分配事件（如果指定了类型则用指定类型，否则随机）
+        # 为被指定的玩家分配事件：
+        # - 指定了类型则用该类型；指定了自定义内容则用自定义内容，否则从题库随机
+        # - 未指定类型则类型与内容均随机
         if session.designated_event_type == "truth":
-            # 强制真心话：从真心话题库随机
-            questions = self._parse_truth_questions()
-            event_text = random.choice(questions) if questions else "请说出一件关于你的真心话！"
             event_type = "truth"
+            if session.designated_event_text:
+                event_text = session.designated_event_text
+            else:
+                questions = self._parse_truth_questions()
+                event_text = random.choice(questions) if questions else "请说出一件关于你的真心话！"
         elif session.designated_event_type == "dare":
-            # 强制大冒险：从大冒险题库随机
-            tasks = self._parse_dare_tasks()
-            event_text = random.choice(tasks) if tasks else "请表演一个才艺！"
             event_type = "dare"
+            if session.designated_event_text:
+                event_text = session.designated_event_text
+            else:
+                tasks = self._parse_dare_tasks()
+                event_text = random.choice(tasks) if tasks else "请表演一个才艺！"
         else:
             # 未指定：随机
             event_type, event_text = self._pick_event()
@@ -485,6 +493,57 @@ class TruthOrDarePlugin(Star):
         except (ValueError, TypeError):
             return user_id
 
+    def _strip_designate_prefix(self, text: str) -> str:
+        """
+        从纯文本片段中去除命令本体（/td 指定 或 指定）及其前导空白，
+        返回剩余内容（@玩家 之后供解析「类型 + 自定义内容」的片段）。
+        兼容框架是否已剥离命令前缀两种情况。
+        """
+        if not text:
+            return ""
+        s = text.strip()
+        # 兼容框架未剥离命令前缀的情况
+        for prefix in ("/td 指定", "td 指定", "/td specify"):
+            if s.startswith(prefix):
+                s = s[len(prefix):].strip()
+                return s
+        # 兼容纯「指定」前缀
+        if s.startswith("指定"):
+            s = s[len("指定"):].strip()
+        return s
+
+    def _parse_type_and_text(self, text: str) -> tuple:
+        """
+        解析「事件类型 + 可选自定义内容」片段。
+        约定：1 = 真心话，2 = 大冒险。
+
+        返回 (event_type, event_text)：
+        - ("truth"/"dare", None)  —— 指定了类型，内容从题库随机
+        - ("truth"/"dare", "内容") —— 指定了类型与自定义内容
+        - (None, None)            —— 未指定类型（随机），从题库随机
+        - ("invalid", None)       —— 类型参数无效（用于在调用处提示错误）
+
+        约定：1 = 真心话，2 = 大冒险（仅支持数字，不兼容旧文字关键字）。
+        """
+        if not text:
+            return (None, None)
+        head = text.lstrip()
+        if not head:
+            return (None, None)
+        first = head.split(None, 1)[0]  # 第一个空白分隔的 token
+        etype = None
+        if first == "1":
+            etype = "truth"
+        elif first == "2":
+            etype = "dare"
+        else:
+            # 第一个 token 既不是 1/2 也不是任意自定义内容开头 → 视为无效
+            return ("invalid", None)
+
+        # 自定义内容 = 第一个 token 之后的部分；首尾空白视为空
+        rest = head[len(first):].strip()
+        return (etype, rest if rest else None)
+
     def _check_round_timeout(self):
         """检测进行中的轮次是否超时，超时则自动跳过（解决 AFK 卡死）"""
         timeout = self.config.get("round_timeout", 0)
@@ -534,6 +593,7 @@ class TruthOrDarePlugin(Star):
                     "designator_id": session.designator_id,
                     "designated_target_id": session.designated_target_id,
                     "designated_event_type": session.designated_event_type,
+                    "designated_event_text": session.designated_event_text,
                     "selection_algorithm": session.selection_algorithm,
                     "current_target_ids": session.current_target_ids,
                     "round_in_progress": session.round_in_progress,
@@ -564,6 +624,7 @@ class TruthOrDarePlugin(Star):
                 session.designator_id = sdata.get("designator_id")
                 session.designated_target_id = sdata.get("designated_target_id")
                 session.designated_event_type = sdata.get("designated_event_type")
+                session.designated_event_text = sdata.get("designated_event_text")
                 session.selection_algorithm = sdata.get("selection_algorithm")
                 session.current_target_ids = sdata.get("current_target_ids", [])
                 session.round_in_progress = sdata.get("round_in_progress", False)
@@ -867,12 +928,15 @@ class TruthOrDarePlugin(Star):
             yield event.plain_result(f"{user_name}，你不是本轮的指定权获得者，无法使用指定指令！")
             return
 
-        # 解析指定目标：仅支持 @ 提及 1 个玩家
+        # 解析指定目标玩家与可选的事件类型/自定义内容
+        # 语法：/td 指定 @玩家 [1|2] [自定义内容]
+        #   1 = 真心话，2 = 大冒险；数字后紧跟的文本为该事件自定义内容
         target_id = None
         target_name = None
-        event_type_arg = None  # 可选：真心话/大冒险
+        event_type_arg = None   # truth / dare / None（随机）
+        event_text_arg = None   # 自定义事件内容；None 表示从题库随机
 
-        # 从 At 组件提取
+        # 从 At 组件提取被指定的玩家，并解析其后的类型与自定义内容
         at_targets = [comp for comp in event.message_obj.message if isinstance(comp, At)]
         if at_targets:
             uid = str(at_targets[0].qq)
@@ -882,42 +946,62 @@ class TruthOrDarePlugin(Star):
             else:
                 yield event.plain_result("该玩家不在游戏中！")
                 return
+            # 从纯文本片段中提取 @ 之后的「类型 + 自定义内容」
+            for comp in event.message_obj.message:
+                if isinstance(comp, Plain):
+                    after = self._strip_designate_prefix(comp.text)
+                    if after:
+                        parsed_type, parsed_text = self._parse_type_and_text(after)
+                        if parsed_type == "invalid":
+                            yield event.plain_result(
+                                "无效的事件类型，请使用：\n"
+                                "1 = 真心话，2 = 大冒险\n"
+                                "示例：/td 指定 @玩家 1 说说最近最尴尬的事\n"
+                                "/td 指定 @玩家 2 喝掉一罐可乐\n"
+                                "或不指定类型（随机）"
+                            )
+                            return
+                        event_type_arg = parsed_type
+                        event_text_arg = parsed_text
+                        break
         else:
-            # 尝试从纯文本中提取玩家名
+            # 无 @ 提及，尝试从纯文本中提取「玩家名 [类型] [内容]」
             message = event.get_message_str()
-            parts = message.strip().split()
-            if len(parts) >= 2:
-                name = parts[1].strip()
+            content = self._strip_designate_prefix(message)
+            if content:
+                tokens = content.split()
+                if not tokens:
+                    tokens = []
+                name = tokens[0] if tokens else ""
                 for uid, p in session.players.items():
                     if p.user_name == name:
                         target_id = uid
                         target_name = p.user_name
                         break
-            if len(parts) >= 3:
-                event_type_arg = parts[2].strip()
-
-        # 解析可选事件类型
-        if event_type_arg:
-            if event_type_arg in ("真心话", "truth", "真话"):
-                event_type_arg = "truth"
-            elif event_type_arg in ("大冒险", "dare", "冒险"):
-                event_type_arg = "dare"
-            else:
-                yield event.plain_result(
-                    "无效的事件类型，请使用：\n"
-                    "/td 指定 @玩家 真心话\n"
-                    "/td 指定 @玩家 大冒险\n"
-                    "或不指定类型（随机）"
-                )
-                return
+                if len(tokens) >= 2:
+                    parsed_type, parsed_text = self._parse_type_and_text(
+                        " ".join(tokens[1:])
+                    )
+                    if parsed_type == "invalid":
+                        yield event.plain_result(
+                            "无效的事件类型，请使用：\n"
+                            "1 = 真心话，2 = 大冒险\n"
+                            "示例：/td 指定 玩家名 1 说说最近最尴尬的事\n"
+                            "/td 指定 玩家名 2 喝掉一罐可乐\n"
+                            "或不指定类型（随机）"
+                        )
+                        return
+                    event_type_arg = parsed_type
+                    event_text_arg = parsed_text
 
         if not target_id:
             yield event.plain_result(
                 "请指定要指定的玩家（仅限 1 人）：\n"
                 "/td 指定 @玩家\n"
                 "/td 指定 玩家名\n"
-                "/td 指定 @玩家 真心话\n"
-                "/td 指定 @玩家 大冒险"
+                "/td 指定 @玩家 1 说说最近最尴尬的事   （1=真心话，后接自定义内容）\n"
+                "/td 指定 @玩家 2 喝掉一罐可乐          （2=大冒险，后接自定义内容）\n"
+                "仅 /td 指定 @玩家 则类型与内容均随机"
             )
             return
 
@@ -926,17 +1010,18 @@ class TruthOrDarePlugin(Star):
             yield event.plain_result("不能指定自己！")
             return
 
-        # 保存被指定的目标
+        # 保存被指定的目标及事件信息
         session.designated_target_id = target_id
-
-        # 如果指定了事件类型，保存到 session
         session.designated_event_type = event_type_arg
+        session.designated_event_text = event_text_arg
 
         type_note = ""
         if event_type_arg == "truth":
             type_note = "（真心话）"
         elif event_type_arg == "dare":
             type_note = "（大冒险）"
+        if event_text_arg:
+            type_note += f"：{event_text_arg}"
 
         yield event.plain_result(
             f"{user_name} 指定了 {target_name} 进行本轮事件{type_note}！\n"
@@ -975,6 +1060,7 @@ class TruthOrDarePlugin(Star):
         # 清除本轮手动指定状态，保留指定权获得者，使其可重新指定
         session.designated_target_id = None
         session.designated_event_type = None
+        session.designated_event_text = None
         yield event.plain_result("已清除本轮手动指定的目标，可重新使用 /td 指定 @玩家 指定其他玩家。")
 
     @td.command("done", alias={"完成"})
@@ -1145,6 +1231,8 @@ class TruthOrDarePlugin(Star):
             # 踢掉的是指定权获得者或被指定者，需要重置指定状态
             session.designator_id = None
             session.designated_target_id = None
+            session.designated_event_type = None
+            session.designated_event_text = None
             session.selection_algorithm = None
             session.target_events = {}
             session.round_in_progress = False
@@ -1227,7 +1315,12 @@ class TruthOrDarePlugin(Star):
             "- 所有人都 Roll 完了后，从 6 种算法随机选一种选出指定权获得者\n"
             "- 算法：点数最大/最小、单数点数最大/最小、双数点数最大/最小\n"
             "- 指定权获得者用 /td 指定 @玩家 指定 1 人\n"
-            "- 可选指定事件类型：/td 指定 @玩家 真心话 / /td 指定 @玩家 大冒险\n"
+            "- 可选指定事件类型与内容：\n"
+            "  - /td 指定 @玩家 1  - 指定为真心话（内容随机）\n"
+            "  - /td 指定 @玩家 2  - 指定为大冒险（内容随机）\n"
+            "  - /td 指定 @玩家 1 内容  - 指定为真心话并自定义内容\n"
+            "  - /td 指定 @玩家 2 内容  - 指定为大冒险并自定义内容\n"
+            "- 省略 1/2/内容 时随机类型与内容\n"
             "- 系统用相同算法补足剩余名额\n"
             "- 每人独立随机真心话或大冒险（未指定时）\n\n"
             "动态人数规则：\n"
