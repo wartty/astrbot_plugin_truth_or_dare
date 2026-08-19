@@ -106,7 +106,6 @@ class GameSession:
 
 # ─── 插件主类 ───────────────────────────────────────────────
 
-@filter.command_group("td")
 class TruthOrDarePlugin(Star):
     """真心话大冒险插件"""
 
@@ -114,6 +113,11 @@ class TruthOrDarePlugin(Star):
         super().__init__(context)
         self.config = config
         self.games: Dict[str, GameSession] = {}  # group_id -> GameSession
+
+    @filter.command_group("td")
+    def td(self):
+        """真心话大冒险指令组（占位，用于注册子指令 /td xxx）"""
+        pass
 
     # ── 工具方法 ──────────────────────────────────────────
 
@@ -582,7 +586,7 @@ class TruthOrDarePlugin(Star):
 
     # ── 指令处理 ──────────────────────────────────────────
 
-    @filter.command("join", alias={"加入"})
+    @td.command("join", alias={"加入"})
     async def cmd_join(self, event: AstrMessageEvent):
         """加入真心话大冒险游戏"""
         group_id = self._get_group_id(event)
@@ -612,7 +616,7 @@ class TruthOrDarePlugin(Star):
         else:
             yield event.plain_result(f"{user_name} 已经在游戏中啦！")
 
-    @filter.command("leave", alias={"退出"})
+    @td.command("leave", alias={"退出"})
     async def cmd_quit(self, event: AstrMessageEvent):
         """退出真心话大冒险游戏"""
         group_id = self._get_group_id(event)
@@ -638,7 +642,7 @@ class TruthOrDarePlugin(Star):
             f"当前玩家数：{session.get_player_count()}"
         )
 
-    @filter.command("list", alias={"列表"})
+    @td.command("list", alias={"列表"})
     async def cmd_player_list(self, event: AstrMessageEvent):
         """查看当前玩家列表"""
         group_id = self._get_group_id(event)
@@ -656,7 +660,7 @@ class TruthOrDarePlugin(Star):
             f"{player_text}"
         )
 
-    @filter.command("start", alias={"开始"})
+    @td.command("start", alias={"开始"})
     async def cmd_start(self, event: AstrMessageEvent):
         """开始真心话大冒险游戏"""
         group_id = self._get_group_id(event)
@@ -694,7 +698,7 @@ class TruthOrDarePlugin(Star):
             f"系统按相同算法补足剩余名额，每人独立获得真心话/大冒险事件！"
         )
 
-    @filter.command("roll")
+    @td.command("roll")
     async def cmd_roll(self, event: AstrMessageEvent):
         """玩家 Roll 点（仅群聊）"""
         group_id = self._get_group_id(event)
@@ -743,7 +747,7 @@ class TruthOrDarePlugin(Star):
             async for result in self._select_and_notify_designator(session, event, all_players):
                 yield result
 
-    @filter.command("result", alias={"结果"})
+    @td.command("result", alias={"结果"})
     async def cmd_roll_result(self, event: AstrMessageEvent):
         """查看所有玩家的 Roll 结果"""
         group_id = self._get_group_id(event)
@@ -773,7 +777,7 @@ class TruthOrDarePlugin(Star):
             + f"\n\n发送 /td go 让机器人处理事件！"
         )
 
-    @filter.command("go", alias={"下一轮"})
+    @td.command("go", alias={"下一轮"})
     async def cmd_go(self, event: AstrMessageEvent):
         """
         处理真心话大冒险事件 - 新指定机制。
@@ -834,7 +838,7 @@ class TruthOrDarePlugin(Star):
         async for result in self._select_and_notify_designator(session, event, all_players):
             yield result
 
-    @filter.command("指定")
+    @td.command("指定")
     async def cmd_designate(self, event: AstrMessageEvent):
         """
         指定权获得者指定 1 名玩家进行事件。
@@ -943,7 +947,7 @@ class TruthOrDarePlugin(Star):
         async for result in self._process_designation(session, event):
             yield result
 
-    @filter.command("指定清除")
+    @td.command("指定清除")
     async def cmd_designate_clear(self, event: AstrMessageEvent):
         """清除本轮手动指定的目标"""
         group_id = self._get_group_id(event)
@@ -973,7 +977,7 @@ class TruthOrDarePlugin(Star):
         session.designated_event_type = None
         yield event.plain_result("已清除本轮手动指定的目标，可重新使用 /td 指定 @玩家 指定其他玩家。")
 
-    @filter.command("done", alias={"完成"})
+    @td.command("done", alias={"完成"})
     async def cmd_done(self, event: AstrMessageEvent):
         """完成当前事件，进入下一轮"""
         group_id = self._get_group_id(event)
@@ -1037,7 +1041,7 @@ class TruthOrDarePlugin(Star):
             f"请发送 /td go 开始下一轮！"
         )
 
-    @filter.command("skip", alias={"跳过"})
+    @td.command("skip", alias={"跳过"})
     async def cmd_skip(self, event: AstrMessageEvent):
         """跳过当前事件（需要被选中的玩家确认）"""
         group_id = self._get_group_id(event)
@@ -1075,7 +1079,7 @@ class TruthOrDarePlugin(Star):
             f"本轮结束！请发送 /td go 开始下一轮！"
         )
 
-    @filter.command("kick", alias={"踢人"})
+    @td.command("kick", alias={"踢人"})
     async def cmd_kick(self, event: AstrMessageEvent):
         """管理员踢出玩家（解决玩家 AFK 导致游戏卡死的问题）"""
         group_id = self._get_group_id(event)
@@ -1171,7 +1175,7 @@ class TruthOrDarePlugin(Star):
                 f"当前玩家数：{session.get_player_count()}"
             )
 
-    @filter.command("end", alias={"结束"})
+    @td.command("end", alias={"结束"})
     async def cmd_end(self, event: AstrMessageEvent):
         """结束游戏（不与其他插件的 stop/help 指令冲突）"""
         group_id = self._get_group_id(event)
@@ -1197,7 +1201,7 @@ class TruthOrDarePlugin(Star):
             f"感谢大家的参与！"
         )
 
-    @filter.command("menu", alias={"帮助"})
+    @td.command("menu", alias={"帮助"})
     async def cmd_menu(self, event: AstrMessageEvent):
         """查看帮助信息（不与其他插件的 help 指令冲突）"""
         yield event.plain_result(
